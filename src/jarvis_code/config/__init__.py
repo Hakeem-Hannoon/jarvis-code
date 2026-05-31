@@ -26,12 +26,14 @@ from .schema import (
     VoiceInputConfig,
     VoiceOutputConfig,
 )
+from .template import DEFAULT_CONFIG_TEMPLATE
 
 __all__ = [
     "ConfigError",
     "ConfigNotFoundError",
     "ConfigValidationError",
     "MissingAPIKeyError",
+    "DEFAULT_CONFIG_TEMPLATE",
     "default_config_path",
     "env_var_for",
     "find_config_path",

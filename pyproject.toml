@@ -50,8 +50,11 @@ dev = [
     "pytest-asyncio>=0.23",
 ]
 
+# The console script targets main() (a thin wrapper around the Typer `app`)
+# so a bare `jarvis "<task>"` routes to the agent; the user-facing command,
+# flags, and subcommands are unchanged.
 [project.scripts]
-jarvis = "jarvis_code.cli.main:app"
+jarvis = "jarvis_code.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/jarvis-code/jarvis-code"

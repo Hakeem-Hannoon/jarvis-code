@@ -24,9 +24,18 @@ from jarvis_code.utils.logging import get_logger
 from .context import ConversationContext
 from .memory import load_project_memory
 from .prompts import build_system_prompt
+from .reporter import NoopReporter, Reporter
 from .state import RunState
 
 _log = get_logger("agent")
+
+
+def _arg_summary(args: dict) -> str:
+    """A short one-line summary of tool arguments for step display."""
+    for key in ("path", "command", "pattern", "src"):
+        if key in args:
+            return str(args[key])[:80]
+    return ""
 
 
 class RunStatus(str, Enum):
@@ -54,6 +63,7 @@ class AgentRuntime:
         session: SessionWriter,
         state: RunState,
         max_steps: int = 20,
+        reporter: Reporter | None = None,
     ) -> None:
         self.provider = provider
         self.executor = executor
@@ -61,6 +71,7 @@ class AgentRuntime:
         self.session = session
         self.state = state
         self.max_steps = max_steps
+        self.reporter: Reporter = reporter or NoopReporter()
         self.pending_steering: list[str] = []  # Phase 9 feeds this; loop drains it.
 
     def steer(self, instruction: str) -> None:
@@ -93,6 +104,8 @@ class AgentRuntime:
 
             self.session.model_response(response.text, response.tool_calls, response.stop_reason)
             self.context.add_assistant(response)
+            if response.text:
+                self.reporter.assistant_text(response.text)
 
             if not response.tool_calls:
                 self.session.run_end("complete", response.text)
@@ -112,6 +125,7 @@ class AgentRuntime:
             tool = self.executor.registry.get(tc.name)
             capability = tool.capability.value if tool else "unknown"
             self.session.record("tool_call", name=tc.name, arguments=tc.arguments)
+            self.reporter.tool_started(tc.name, _arg_summary(tc.arguments))
 
             if revise_feedback is not None:
                 # A prior call in this batch was redirected; don't run the rest.
@@ -127,6 +141,7 @@ class AgentRuntime:
                 tc.name, capability, outcome.outcome.value, outcome.reason
             )
             self.state.note_permission(f"{tc.name}: {outcome.outcome.value}")
+            self.reporter.permission(tc.name, outcome.outcome.value, outcome.reason)
 
             if outcome.outcome == OutcomeKind.REVISE:
                 revise_feedback = outcome.feedback or "do something else"
@@ -146,6 +161,9 @@ class AgentRuntime:
             self.state.note_command(result.metadata.get("command"))
             if not result.ok:
                 self.state.note_error(result.error)
+            self.reporter.tool_finished(
+                tc.name, result.ok, result.error or f"{len(result.output)} chars"
+            )
 
         if revise_feedback is not None:
             self.context.add_user(f"[steering] {revise_feedback}")
@@ -161,6 +179,7 @@ def assemble_runtime(
     provider=None,
     http_client=None,
     session: SessionWriter | None = None,
+    reporter: Reporter | None = None,
     max_steps: int = 20,
 ) -> AgentRuntime:
     """Wire up a runtime. ``provider`` may be injected (tests); else built from config."""
@@ -188,4 +207,5 @@ def assemble_runtime(
         session=session,
         state=state,
         max_steps=max_steps,
+        reporter=reporter,
     )

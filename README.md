@@ -4,9 +4,11 @@ A local, sandboxed, multi-provider CLI coding agent with optional local/offline
 voice I/O. Installs a command called **`jarvis`**.
 
 > The agent operates **only** inside its sandbox root. The model *proposes*
-> actions; the deterministic runtime *enforces* the rules. Secrets never enter
+> actions; the deterministic runtime *enforces* the rules. API keys never enter
 > the model context, logs, transcripts, or speech. Voice is fully optional and
 > local-by-default.
+
+---
 
 ## Quick start
 
@@ -14,52 +16,197 @@ voice I/O. Installs a command called **`jarvis`**.
 git clone <repo-url> jarvis-code
 cd jarvis-code
 
-python3 -m venv .venv && . .venv/bin/activate   # Python 3.11+
+python3 -m venv .venv && . .venv/bin/activate     # Python 3.11+
 pip install -e ".[dev]"
 
-jarvis --help
-jarvis doctor            # environment & config health checks (coming in Phase 6)
-jarvis init              # scaffold a git-ignored .jarvis/ with config (Phase 6)
+jarvis doctor                 # health checks (works before init)
+jarvis init                   # scaffold a git-ignored .jarvis/ with config
+# edit .jarvis/config.toml and add a key, OR export ANTHROPIC_API_KEY=...
 jarvis --mode plan "explain this project"
 ```
 
-## Status
+`jarvis doctor` works before `jarvis init` and tells you exactly what's missing.
+Optional voice extras: `pip install -e ".[voice]"` (TTS) and `".[stt]"` (speech
+input) — everything degrades cleanly to silent/no-op when they're absent.
 
-Early development. Built in phases (see `instructions.txt`):
+---
 
-- [x] **Phase 0** — Scaffold & toolchain
-- [ ] Phase 1 — Sandbox filesystem layer
-- [ ] Phase 2 — Config & secrets loader
-- [ ] Phase 3 — Tool registry + permission manager
-- [ ] Phase 4 — Model provider abstraction
-- [ ] Phase 5 — Agent runtime loop, sessions, memory
-- [ ] Phase 6 — CLI surface & terminal UX
-- [ ] Phase 7 — Voice output (local/offline)
-- [ ] Phase 8 — Voice input + STT + mic modes
-- [ ] Phase 9 — Event system, live steering & interrupts
-- [ ] Phase 10 — Sub-agent orchestration
-- [ ] Phase 11 — Docs, final doctor, polish
+## Permission modes
 
-## Security model (summary)
+Choose with `--mode` (default: `auto`).
 
-- **Sandbox:** every filesystem path is canonicalized and re-validated to be
-  inside the sandbox root before use. Symlink escapes are rejected. Subprocesses
-  run with a cwd confined to the root. Even `dangerous` mode cannot escape.
-- **Permission modes:** `plan` (read-only), `auto` (asks before shell / shows
-  diffs), `dangerous` (no per-action prompts, still sandboxed).
-- **Secrets:** API keys live in a git-ignored local config or env vars, and are
-  never placed in model context, logs, transcripts, or speech.
-- **Voice privacy:** local/offline by default; no cloud TTS/STT without explicit
-  opt-in; `Muted` mode records nothing.
+| Mode        | Reads | Writes / edits / deletes / shell | Notes |
+|-------------|-------|----------------------------------|-------|
+| `plan`      | ✓     | ✗ (denied)                       | Read / inspect / plan only. |
+| `auto`      | ✓     | asks first (shows a diff/summary; for shell: command, cwd, why, effect, risk) | The default. |
+| `dangerous` | ✓     | no per-action prompt             | Prints a startup warning. **Still confined to the sandbox.** |
 
-Full provider setup, voice setup, and keyboard controls are documented in
-Phase 11. See `CLAUDE.md` for engineering invariants.
+The approval prompt is always exactly:
+
+```
+  1) Yes   2) No   3) Do Something Else
+```
+
+**Do Something Else** lets you type (or speak) an instruction back to the model,
+which it uses to revise its approach.
+
+---
+
+## Security model
+
+- **Sandbox.** Every filesystem path is expanded (`~`, `$VAR`), made absolute,
+  canonicalized with symlinks resolved, and re-validated to be inside the
+  sandbox root *before* any use. Traversal (`..`), absolute out-of-root paths,
+  and symlinks whose targets escape are all rejected and logged. Subprocesses
+  run with a working directory confined to the root. **Even `dangerous` mode
+  cannot escape the sandbox.**
+- **Shell.** `run_shell` enforces a confined working directory and screens a
+  small set of catastrophic patterns (e.g. `rm -rf /`, fork bombs). Full process
+  isolation (preventing a shell reading outside via absolute paths) needs
+  OS-level sandboxing and is a documented deferral; until then `plan` forbids
+  shell and `auto` asks before every command. See `docs/security.md`.
+- **Secrets.** API keys live in a git-ignored local config or env vars. They are
+  used only as HTTP request headers and are **never** placed in the model
+  context, URLs, logs, transcripts, or speech. A process-wide redactor scrubs
+  any registered key from logs and transcripts.
+- **Trust boundary.** The model proposes; the deterministic runtime enforces.
+  Every model-produced path, command, and argument is treated as untrusted.
+
+---
+
+## Providers
+
+Configure in `.jarvis/config.toml` (created by `jarvis init`) or via env vars.
+Select at runtime with `--provider <name>` and `--model <name>`.
+
+| Provider     | Config key            | Env var             | Notes |
+|--------------|-----------------------|---------------------|-------|
+| Anthropic    | `[providers.anthropic]` | `ANTHROPIC_API_KEY` | Messages API. |
+| OpenAI       | `[providers.openai]`    | `OPENAI_API_KEY`    | Chat Completions. |
+| DeepSeek     | `[providers.deepseek]`  | `DEEPSEEK_API_KEY`  | OpenAI-compatible. |
+| Gemini       | `[providers.gemini]`    | `GEMINI_API_KEY`    | `generateContent`. |
+| Vertex AI    | `[providers.vertex]`    | `VERTEX_API_KEY`    | Set `endpoint`, `project`, `location`. |
+| Azure Foundry| `[providers.azure]`     | `AZURE_API_KEY`     | Set `endpoint`, `api_version`; `model` = deployment name. |
+
+Env vars always override file values. Example:
+
+```toml
+default_provider = "anthropic"
+
+[providers.anthropic]
+api_key = ""                 # or export ANTHROPIC_API_KEY
+model = "claude-opus-4-8"
+
+[providers.azure]
+api_key = ""                 # or export AZURE_API_KEY
+model = "my-deployment"
+endpoint = "https://my-resource.openai.azure.com"
+api_version = "2024-06-01"
+```
+
+`jarvis config validate` reports problems (never printing a key); `jarvis config
+path` prints the resolved config location.
+
+---
+
+## Voice (optional, local-by-default)
+
+Voice is off by default. Enable it under `[voice]` / `[voice.input]` in config.
+Nothing is sent to any cloud TTS/STT unless you explicitly opt in.
+
+### Output (TTS)
+
+```bash
+pip install -e ".[voice]"
+jarvis voices list      # shows engine availability + which would be used
+jarvis voices test      # speaks a short test phrase (silent Noop if unavailable)
+```
+
+- **Piper** (default): local neural TTS. Download a `.onnx` voice model and set
+  `model_path` (and `config_path`) under `[voice]`.
+- **System**: OS TTS via `pyttsx3`.
+- **Noop**: silent fallback — always available, never crashes.
+
+Only short, curated status strings are ever spoken (e.g. "Running the test
+suite."). Raw model output, file contents, shell output, and secrets are never
+voiced. The default preset `"jarvis-inspired"` is a calm/concise/technical
+*style* — not a cloned voice.
+
+### Input (STT) + mic modes
+
+```bash
+pip install -e ".[stt]"
+```
+
+Set `[voice.input] enabled = true` and choose a `mode`:
+
+- **Open Mic** — continuous listening (VAD/wake-word gated to avoid noise).
+- **Push to Talk** — records only while held (`Space`); `V` toggles recording.
+- **Muted** — the mic is fully off: **nothing is recorded, transcribed, or
+  stored.**
+
+Local STT (`faster-whisper` or `vosk`) is the default. Cloud STT is refused
+unless you set `allow_cloud_stt = true`. The terminal shows the active mode:
+
+```
+Mic: [Open Mic] [>Push to Talk<] [Muted]
+```
+
+Voice input and output are independent — you can enable one without the other.
+
+---
+
+## Keyboard controls (interactive voice mode)
+
+```
+M       cycle mic mode (Open Mic / Push to Talk / Muted)
+V       toggle push-to-talk recording
+Space   hold-to-talk in Push to Talk mode
+Esc     soft interrupt (finish the current safe step, then adjust)
+Ctrl+C  hard stop / exit
+?       show controls
+```
+
+Live speech/text is classified into **steering** (folded into the plan),
+**questions** (answered briefly while work continues), **soft/hard interrupts**,
+and **permission responses** (routed to the active 1/2/3 prompt — one path, no
+parallel permission system).
+
+---
+
+## Commands
+
+```
+jarvis "<task>"                       run the agent on a task
+jarvis --mode plan|auto|dangerous     select permission mode
+jarvis --sandbox <path>               set the sandbox root
+jarvis --provider <p> --model <m>     override provider/model
+jarvis init                           scaffold .jarvis/
+jarvis doctor                         environment + config health checks
+jarvis config path | validate         config helpers
+jarvis voices list | test             voice engine info
+jarvis --help | --version
+```
+
+---
+
+## Sub-agents
+
+The agent can spawn focused sub-agents — **explorer, planner, debugger,
+reviewer, implementer, verifier** — each in its own context window. A sub-agent
+inherits the same sandbox and a permission mode clamped to never exceed the
+parent's, and returns a concise summary (not its transcript).
+
+---
 
 ## Development
 
 ```bash
 pytest -q          # the full test suite, one command, must stay green
 ```
+
+See `CLAUDE.md` for engineering invariants and `docs/` for deeper notes
+(`architecture.md`, `security.md`, `voice.md`).
 
 ## License
 

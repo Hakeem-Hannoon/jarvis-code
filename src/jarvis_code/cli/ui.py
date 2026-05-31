@@ -35,6 +35,33 @@ class ConsoleReporter:
         self._echo(typer.style(text, fg=typer.colors.MAGENTA))
 
 
+class CompositeReporter:
+    """Fan out reporter hooks to several reporters (e.g. console + voice)."""
+
+    def __init__(self, reporters: list) -> None:
+        self._reporters = reporters
+
+    def assistant_text(self, text: str) -> None:
+        for r in self._reporters:
+            r.assistant_text(text)
+
+    def tool_started(self, name: str, summary: str) -> None:
+        for r in self._reporters:
+            r.tool_started(name, summary)
+
+    def tool_finished(self, name: str, ok: bool, detail: str) -> None:
+        for r in self._reporters:
+            r.tool_finished(name, ok, detail)
+
+    def permission(self, tool: str, outcome: str, reason: str | None) -> None:
+        for r in self._reporters:
+            r.permission(tool, outcome, reason)
+
+    def info(self, text: str) -> None:
+        for r in self._reporters:
+            r.info(text)
+
+
 def print_finish_summary(result: RunResult) -> None:
     state: RunState = result.state
     typer.echo("")

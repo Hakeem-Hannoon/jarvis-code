@@ -123,10 +123,15 @@ pytest -q
 
 ## Status
 
-Phases 0–3 complete:
-- 0 scaffold/packaging/CLI stub; 1 sandbox (single fs chokepoint);
-- 2 config + secret-redacting logger; 3 full tool set + 3-mode permission
-  manager + 1/2/3 approval menu + executor gating.
+All phases (0–11) complete:
+- 0 scaffold/packaging/CLI; 1 sandbox (single fs chokepoint); 2 config +
+  secret-redacting logger; 3 full tool set + 3-mode permission manager + 1/2/3
+  menu; 4 six model providers (keys header-only); 5 async runtime loop +
+  context compaction + JSONL sessions + project memory; 6 CLI surface
+  (init/doctor/config/voices) + UX; 7 local voice output (Piper/System/Noop) +
+  curated cancellable queue; 8 local STT + Open Mic/PTT/Muted; 9 event bus +
+  instruction queue + steering/interrupts + voice-as-permission; 10 sub-agent
+  orchestration (clamped perms, summary-only); 11 docs + final doctor.
 
-See `instructions.txt` for the full phase plan; update this Status section as
-phases land.
+Test command: `pytest -q` (must stay green). See `docs/` for deeper notes and
+`instructions.txt` for the original phase plan.

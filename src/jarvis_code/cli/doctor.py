@@ -89,7 +89,16 @@ def collect_checks(opts: GlobalOptions) -> list[Check]:
         )
 
         voice = config.voice
-        checks.append(Check("voice output (noop fallback)", True, "always available"))
+        from jarvis_code.voice import select_engine
+
+        selected = select_engine(voice)
+        checks.append(
+            Check(
+                "voice output engine",
+                True,
+                f"configured={voice.engine.value}, would use={selected.name}",
+            )
+        )
         if voice.engine == VoiceEngineName.PIPER:
             checks.append(
                 Check("Piper TTS", _have("piper"), "ok" if _have("piper") else "pip install '.[voice]'")

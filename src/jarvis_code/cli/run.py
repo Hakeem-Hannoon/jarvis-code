@@ -12,9 +12,10 @@ from jarvis_code.agent.loop import RunStatus
 from jarvis_code.config import ConfigError, MissingAPIKeyError, load_config
 from jarvis_code.permissions import PermissionMode, TerminalPrompter
 from jarvis_code.sandbox import Sandbox, SandboxRootError, resolve_sandbox_root
+from jarvis_code.voice import VoiceReporter, VoiceSubsystem, select_engine
 
 from .options import GlobalOptions
-from .ui import ConsoleReporter, print_finish_summary
+from .ui import CompositeReporter, ConsoleReporter, print_finish_summary
 
 _DANGEROUS_WARNING = (
     "⚠  DANGEROUS MODE: writes, edits, deletes, and shell commands run without "
@@ -43,19 +44,32 @@ def run_task(opts: GlobalOptions, task: str) -> int:
     typer.echo(typer.style(f"jarvis [{opts.mode.value}] · sandbox: {root}", dim=True))
     typer.echo("")
 
-    try:
+    async def _go():
+        reporter = ConsoleReporter()
+        voice_sub: VoiceSubsystem | None = None
+        if config.voice.enabled:
+            voice_sub = VoiceSubsystem(select_engine(config.voice), config.voice)
+            await voice_sub.start()
+            reporter = CompositeReporter([ConsoleReporter(), VoiceReporter(voice_sub)])
         runtime = assemble_runtime(
             config=config,
             sandbox=sandbox,
             mode=opts.mode,
             provider=None,
             prompter=TerminalPrompter(),
-            reporter=ConsoleReporter(),
+            reporter=reporter,
         )
+        try:
+            return await runtime.run(task)
+        finally:
+            if voice_sub is not None:
+                await voice_sub.aclose()
+
+    try:
+        result = asyncio.run(_go())
     except MissingAPIKeyError as exc:
         typer.echo(str(exc), err=True)
         return 1
 
-    result = asyncio.run(runtime.run(task))
     print_finish_summary(result)
     return 0 if result.status == RunStatus.COMPLETE else 1

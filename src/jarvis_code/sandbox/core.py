@@ -182,6 +182,22 @@ class Sandbox:
         resolved = self.safe_path(path, must_exist=True)
         return resolved.read_bytes()
 
+    def append(
+        self,
+        path: str | os.PathLike[str],
+        content: str,
+        *,
+        encoding: str = "utf-8",
+        create_parents: bool = True,
+    ) -> Path:
+        """Append text to an in-root file (used for append-only JSONL logs)."""
+        resolved = self.safe_path(path)
+        if create_parents:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+        with resolved.open("a", encoding=encoding) as fh:
+            fh.write(content)
+        return resolved
+
     def write(
         self,
         path: str | os.PathLike[str],

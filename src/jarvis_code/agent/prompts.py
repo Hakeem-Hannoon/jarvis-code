@@ -43,10 +43,12 @@ def build_system_prompt(
     sandbox_root: str,
     tool_specs: list[dict],
     memory: str | None,
+    role: str | None = None,
 ) -> str:
     tool_lines = "\n".join(f"  - {t['name']}: {t['description']}" for t in tool_specs)
+    identity = role or "You are jarvis, a careful, local, sandboxed coding agent."
     sections = [
-        "You are jarvis, a careful, local, sandboxed coding agent.",
+        identity,
         _SAFETY_RULES,
         _MODE_GUIDANCE[mode],
         f"SANDBOX ROOT: {sandbox_root}\nAll paths are relative to this root.",

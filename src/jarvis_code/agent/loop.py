@@ -256,7 +256,21 @@ def assemble_runtime(
     )
     context = ConversationContext(system_prompt)
     state = RunState()
-    executor = ToolExecutor(registry, permissions, ToolContext(sandbox=sandbox))
+
+    # Lazy import avoids an import cycle (subagents imports agent symbols).
+    from jarvis_code.subagents import SubAgentOrchestrator
+
+    orchestrator = SubAgentOrchestrator(
+        provider=provider,
+        sandbox=sandbox,
+        parent_mode=mode,
+        prompter=prompter,
+        bus=bus,
+        parent_session=session,
+        parent_state=state,
+    )
+    tool_ctx = ToolContext(sandbox=sandbox, orchestrator=orchestrator)
+    executor = ToolExecutor(registry, permissions, tool_ctx)
     return AgentRuntime(
         provider=provider,
         executor=executor,

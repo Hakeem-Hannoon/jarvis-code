@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from jarvis_code.config import JarvisConfig
+from jarvis_code.events import EventBus, EventType, InstructionKind, InstructionQueue
 from jarvis_code.models import ProviderError, build_provider
 from jarvis_code.permissions import OutcomeKind, PermissionManager, PermissionMode
 from jarvis_code.sandbox import Sandbox
@@ -64,6 +65,8 @@ class AgentRuntime:
         state: RunState,
         max_steps: int = 20,
         reporter: Reporter | None = None,
+        instructions: InstructionQueue | None = None,
+        bus: EventBus | None = None,
     ) -> None:
         self.provider = provider
         self.executor = executor
@@ -72,25 +75,52 @@ class AgentRuntime:
         self.state = state
         self.max_steps = max_steps
         self.reporter: Reporter = reporter or NoopReporter()
-        self.pending_steering: list[str] = []  # Phase 9 feeds this; loop drains it.
+        self.bus = bus if bus is not None else EventBus()
+        self.instructions = instructions if instructions is not None else InstructionQueue(self.bus)
+        self._aborted = False  # set by a hard interrupt
+        self._abort_reason = ""
 
     def steer(self, instruction: str) -> None:
         """Queue a steering instruction to fold in at the next safe checkpoint."""
-        self.pending_steering.append(instruction)
+        self.instructions.submit(instruction)
 
-    def _drain_steering(self) -> None:
-        while self.pending_steering:
-            instruction = self.pending_steering.pop(0)
-            self.context.add_user(f"[steering] {instruction}")
-            self.session.steering(instruction)
+    def _checkpoint(self, name: str) -> bool:
+        """Drain + apply live instructions. Returns False if the run must abort.
+
+        Safe checkpoints (the loop calls this before the model call, before each
+        tool execution, after each tool result, and before finalizing).
+        """
+        for instr in self.instructions.drain_steering():
+            if instr.kind == InstructionKind.HARD_INTERRUPT:
+                self._aborted = True
+                self._abort_reason = instr.text
+                self.bus.emit(EventType.INTERRUPT_REQUESTED, kind="hard", at=name)
+            elif instr.kind == InstructionKind.SOFT_INTERRUPT:
+                self.context.add_user(f"[soft-interrupt] After the current step, adjust: {instr.text}")
+                self.session.steering(f"soft-interrupt: {instr.text}")
+            elif instr.kind == InstructionKind.QUESTION:
+                self.context.add_user(f"[user question — answer briefly, keep working] {instr.text}")
+            else:
+                # STEERING or a permission response arriving with no active prompt.
+                self.context.add_user(f"[steering] {instr.text}")
+                self.session.steering(instr.text)
+        return not self._aborted
+
+    def _aborted_result(self, step: int) -> RunResult:
+        msg = f"Stopped at user request. {self._abort_reason}".strip()
+        self.session.run_end("aborted", msg)
+        return RunResult(RunStatus.ABORTED, msg, step, self.state)
 
     async def run(self, user_request: str) -> RunResult:
         self.state.goal = user_request
         self.session.prompt(user_request)
         self.context.add_user(user_request)
+        self.bus.emit(EventType.USER_TEXT_INPUT, text=user_request)
 
         for step in range(1, self.max_steps + 1):
-            self._drain_steering()
+            self.bus.emit(EventType.AGENT_STEP_STARTED, step=step)
+            if not self._checkpoint("before_model_call"):
+                return self._aborted_result(step)
             if self.context.needs_compaction():
                 self.context.compact(self.state)
 
@@ -108,10 +138,16 @@ class AgentRuntime:
                 self.reporter.assistant_text(response.text)
 
             if not response.tool_calls:
+                if not self._checkpoint("before_finalizing"):
+                    return self._aborted_result(step)
                 self.session.run_end("complete", response.text)
+                self.bus.emit(EventType.AGENT_STEP_FINISHED, step=step, final=True)
                 return RunResult(RunStatus.COMPLETE, response.text, step, self.state)
 
             self._run_tool_calls(response)
+            self.bus.emit(EventType.AGENT_STEP_FINISHED, step=step)
+            if self._aborted:
+                return self._aborted_result(step)
 
         msg = "Reached the step limit before completing."
         self.session.run_end("max_steps", msg)
@@ -126,6 +162,15 @@ class AgentRuntime:
             capability = tool.capability.value if tool else "unknown"
             self.session.record("tool_call", name=tc.name, arguments=tc.arguments)
             self.reporter.tool_started(tc.name, _arg_summary(tc.arguments))
+            self.bus.emit(EventType.TOOL_STARTED, name=tc.name)
+
+            # Safe checkpoint before executing any tool (covers writes, shell,
+            # and sub-agent spawns). A hard interrupt stops the batch here.
+            if not self._checkpoint(f"before_tool:{tc.name}"):
+                note = "Skipped: user interrupted."
+                self.context.add_tool_result(tc.id, tc.name, note)
+                self.session.tool_result(tc.name, False, note, None, {})
+                continue
 
             if revise_feedback is not None:
                 # A prior call in this batch was redirected; don't run the rest.
@@ -142,6 +187,9 @@ class AgentRuntime:
             )
             self.state.note_permission(f"{tc.name}: {outcome.outcome.value}")
             self.reporter.permission(tc.name, outcome.outcome.value, outcome.reason)
+            self.bus.emit(
+                EventType.PERMISSION_DECISION, tool=tc.name, outcome=outcome.outcome.value
+            )
 
             if outcome.outcome == OutcomeKind.REVISE:
                 revise_feedback = outcome.feedback or "do something else"
@@ -164,6 +212,11 @@ class AgentRuntime:
             self.reporter.tool_finished(
                 tc.name, result.ok, result.error or f"{len(result.output)} chars"
             )
+            self.bus.emit(
+                EventType.TOOL_FINISHED if result.ok else EventType.TOOL_FAILED, name=tc.name
+            )
+            # Safe checkpoint after each tool result.
+            self._checkpoint(f"after_tool:{tc.name}")
 
         if revise_feedback is not None:
             self.context.add_user(f"[steering] {revise_feedback}")
@@ -180,9 +233,13 @@ def assemble_runtime(
     http_client=None,
     session: SessionWriter | None = None,
     reporter: Reporter | None = None,
+    instructions: InstructionQueue | None = None,
+    bus: EventBus | None = None,
     max_steps: int = 20,
 ) -> AgentRuntime:
     """Wire up a runtime. ``provider`` may be injected (tests); else built from config."""
+    bus = bus if bus is not None else EventBus()
+    instructions = instructions if instructions is not None else InstructionQueue(bus)
     registry = build_default_registry()
     permissions = PermissionManager(mode, prompter=prompter)
     if provider is None:
@@ -208,4 +265,6 @@ def assemble_runtime(
         state=state,
         max_steps=max_steps,
         reporter=reporter,
+        instructions=instructions,
+        bus=bus,
     )

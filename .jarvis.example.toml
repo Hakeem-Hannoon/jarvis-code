@@ -1,0 +1,72 @@
+# jarvis-code example configuration — PLACEHOLDERS ONLY.
+#
+# Copy to .jarvis/config.toml (created by `jarvis init`) and fill in real values,
+# OR leave api_key blank and export the matching env var instead
+# (ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY,
+#  VERTEX_API_KEY, AZURE_API_KEY). Env vars always override file values.
+#
+# This file is safe to commit. Your real config (.jarvis/) is git-ignored.
+
+# Which provider + model to use by default. Override at runtime with
+# `jarvis --provider <name> --model <name>`.
+default_provider = "anthropic"
+
+[providers.anthropic]
+api_key = ""                                  # or set ANTHROPIC_API_KEY
+model = "claude-opus-4-8"
+
+[providers.openai]
+api_key = ""                                  # or set OPENAI_API_KEY
+model = "gpt-4o"
+
+[providers.deepseek]
+api_key = ""                                  # or set DEEPSEEK_API_KEY
+model = "deepseek-chat"
+
+[providers.gemini]
+api_key = ""                                  # or set GEMINI_API_KEY
+model = "gemini-1.5-pro"
+
+[providers.vertex]
+api_key = ""                                  # or set VERTEX_API_KEY
+model = "gemini-1.5-pro"
+endpoint = "https://us-central1-aiplatform.googleapis.com"  # your region endpoint
+project = "your-gcp-project-id"
+location = "us-central1"
+
+[providers.azure]
+api_key = ""                                  # or set AZURE_API_KEY
+model = "gpt-4o"                              # your Azure deployment name
+endpoint = "https://your-resource.openai.azure.com"
+api_version = "2024-06-01"
+
+# ---------------------------------------------------------------------------
+# Voice output (local/offline by default). All of this is optional.
+# ---------------------------------------------------------------------------
+[voice]
+enabled = false
+engine = "piper"                # piper | system | noop
+default_voice = "jarvis-inspired"
+model_path = ""                 # path to a Piper .onnx voice model on disk
+config_path = ""                # path to the matching .onnx.json
+fallback_engine = "system"      # used if the primary engine is unavailable
+speech_rate = 1.0
+volume = 0.9
+announce_subagents = true
+announce_permissions = true
+swarm_phrase = "Launching the swarm."
+
+[voice.output]
+# Reserved for future fine-grained output options.
+max_chars = 160                 # never speak strings longer than this
+
+# ---------------------------------------------------------------------------
+# Voice input (local/offline STT). Disabled by default.
+# ---------------------------------------------------------------------------
+[voice.input]
+enabled = false
+mode = "muted"                  # open_mic | push_to_talk | muted
+stt_engine = "faster-whisper"   # faster-whisper | vosk
+push_to_talk_key = "space"      # hold-to-talk key; V toggles recording
+wake_word_enabled = false
+allow_cloud_stt = false         # MUST be explicitly true to ever use cloud STT

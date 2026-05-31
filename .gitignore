@@ -1,0 +1,32 @@
+# --- jarvis runtime (NEVER commit; may contain real config with secrets) ---
+.jarvis/
+.jarvis.toml
+jarvis.toml
+
+# --- python ---
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# --- voice models (large binaries, downloaded locally) ---
+*.onnx
+*.onnx.json
+
+# --- tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- editor / OS ---
+.idea/
+.vscode/
+.DS_Store

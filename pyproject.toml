@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-code"
+version = "0.1.0"
+description = "A local, sandboxed, multi-provider CLI coding agent with optional local voice I/O."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "jarvis-code contributors" }]
+keywords = ["cli", "coding-agent", "sandbox", "llm", "voice"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+
+# Core runtime dependencies. These are intentionally minimal: everything
+# voice/STT related is optional and lazy-imported (see [project.optional-dependencies]).
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.6",
+    "tomli-w>=1.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# Local, offline text-to-speech engines. Never required.
+voice = [
+    "piper-tts>=1.2",
+    "pyttsx3>=2.90",
+    "sounddevice>=0.4",
+]
+# Local, offline speech-to-text + voice-activity-detection. Never required.
+stt = [
+    "faster-whisper>=1.0",
+    "vosk>=0.3",
+    "sounddevice>=0.4",
+    "webrtcvad>=2.0",
+]
+# Developer tooling.
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+jarvis = "jarvis_code.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/jarvis-code/jarvis-code"
+Repository = "https://github.com/jarvis-code/jarvis-code"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"

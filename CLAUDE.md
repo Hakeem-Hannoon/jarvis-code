@@ -109,8 +109,24 @@ jarvis --help
 pytest -q
 ```
 
+## Known engineering decisions / deferrals
+
+- **Shell process isolation:** `run_shell` *enforces* a sandbox-confined working
+  directory (the real guarantee) and *screens* a small set of catastrophic
+  patterns in all modes (`rm -rf /`, fork bombs, `mkfs`, device writes, power
+  control) as defense in depth. Preventing a shell from reading outside the root
+  via absolute paths (e.g. `cat /etc/passwd`) requires OS-level sandboxing
+  (containers/seccomp/sandbox-exec), which is deferred. Until then containment
+  rests on: cwd confinement + `plan` forbidding shell + `auto` asking before
+  every shell command (showing command/cwd/why/effect/risk) + logging. Our
+  deterministic *fs tools* always enforce canonical in-root paths.
+
 ## Status
 
-Phase 0 complete: scaffold, packaging, `jarvis --help`, smoke tests. See
-`instructions.txt` for the full phase plan; update this Status section as phases
-land.
+Phases 0–3 complete:
+- 0 scaffold/packaging/CLI stub; 1 sandbox (single fs chokepoint);
+- 2 config + secret-redacting logger; 3 full tool set + 3-mode permission
+  manager + 1/2/3 approval menu + executor gating.
+
+See `instructions.txt` for the full phase plan; update this Status section as
+phases land.

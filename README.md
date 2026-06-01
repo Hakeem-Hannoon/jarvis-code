@@ -10,46 +10,68 @@ voice I/O. Installs a command called **`jarvis`**.
 
 ---
 
-## Quick start
+## Install
 
-Clone and run once — `jarvis` then works from **any** directory:
+**One command** — clone, install everything, and put `jarvis` on your PATH:
 
 ```bash
-git clone <repo-url> jarvis-code
-cd jarvis-code
-./install.sh                  # installs jarvis on PATH (pipx, or venv + ~/.local/bin)
-                              # and creates a per-user global config
-
-jarvis doctor                 # health checks (works before adding a key)
-# add a key to ~/.config/jarvis/config.toml, OR export e.g. AZURE_API_KEY=...
-
-cd ~/any/project
-jarvis                        # interactive chat — picks up the global config anywhere
-jarvis --mode plan "explain this project"   # or run a single task and exit
+git clone https://github.com/Hakeem-Hannoon/jarvis-code.git && cd jarvis-code && ./install.sh
 ```
+
+That creates a virtualenv, installs jarvis **and all optional features** (neural
+voice output + local speech-to-text), downloads the realistic British-male
+"JARVIS" voice, and creates a per-user config — so `jarvis` runs from **any**
+directory.
+
+Then just run it:
+
+```bash
+jarvis
+```
+
+Add a model API key before your first message — edit `~/.config/jarvis/config.toml`
+(or `export AZURE_API_KEY=...`). Run `jarvis doctor` anytime to check your setup.
 
 <details><summary>Manual install (no install.sh)</summary>
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate     # Python 3.11+
-pip install -e ".[dev]"
-jarvis init --global          # per-user config, used from any directory
+pip install -e ".[voice,stt,dev]"   # all features (use ".[dev]" alone for text-only)
+jarvis init --global                # per-user config, used from any directory
 ```
+Then put `jarvis` on your PATH, e.g. `ln -s "$PWD/.venv/bin/jarvis" ~/.local/bin/jarvis`.
 </details>
 
-Running `jarvis` with no task drops you into a **live chat**: a persistent
-conversation where each line is a turn and context carries across turns. In-chat
-commands: `/help`, `/talk` (push-to-talk), `/mode plan|auto|dangerous`,
-`/sandbox`, `/exit` (or Ctrl-D). The prompt has full line editing — arrow keys,
-persistent ↑/↓ history, and Emacs shortcuts (Ctrl-A/E/K/U/W).
+---
 
-**Voice output is on by default** (local macOS `say`, British "Daniel" voice for
-the JARVIS-style preset). Mute a run with `--voice false`, or force it on with
-`--voice true`. The agent runs with **no step limit** by default.
+## A quick tour
 
-`jarvis doctor` works before `jarvis init` and tells you exactly what's missing.
-Optional voice extras: `pip install -e ".[voice]"` (TTS) and `".[stt]"` (speech
-input) — everything degrades cleanly to silent/no-op when they're absent.
+Run **`jarvis`** with no arguments for a **live chat** — a persistent
+conversation where each line is a turn and context carries across turns.
+
+- **Just type.** Ask for what you want and press Enter. The agent reads code,
+  makes edits, and runs commands (asking first in `auto` mode), then reports back.
+- **Full line editing.** ←/→ to move, **↑/↓ for history** (saved across
+  sessions), and Emacs shortcuts: Ctrl-A/E (start/end), Ctrl-K/U (kill line),
+  Ctrl-W (delete word).
+- **It talks.** Voice output is **on by default** — short spoken status in a
+  realistic neural voice (it narrates *what it's doing and why*). Mute a run with
+  `--voice false`; force it on with `--voice true`.
+- **Talk to it.** Type **`/talk`**, speak, press Enter — your speech is
+  transcribed **locally** and run as the next turn. (`install.sh` already set up
+  the speech engine.)
+- **In-chat commands:** `/help` · `/talk` · `/mode plan|auto|dangerous` ·
+  `/sandbox` · `/exit` (or Ctrl-D).
+
+Prefer a one-shot run instead of a chat?
+
+```bash
+jarvis "add type hints to utils.py and run the tests"
+jarvis --mode plan "explain how auth works in this project"
+```
+
+The agent runs with **no step limit** by default, so it works a task through to
+completion — interrupt anytime with Ctrl-C.
 
 ---
 
@@ -131,73 +153,59 @@ path` prints the resolved config location.
 
 ---
 
-## Voice (optional, local-by-default)
+## Voice (local & offline)
 
-Voice is off by default. Enable it under `[voice]` / `[voice.input]` in config.
-Nothing is sent to any cloud TTS/STT unless you explicitly opt in.
+Everything voice-related runs **on your machine** — no audio or text is sent to a
+cloud service unless you explicitly opt in (`allow_cloud_stt = true`).
 
-### Output (TTS)
+### Output — jarvis speaks (on by default)
 
-```bash
-pip install -e ".[voice]"
-jarvis voices list      # shows engine availability + which would be used
-jarvis voices test      # speaks a short test phrase (silent Noop if unavailable)
-```
-
-- **Piper** (default): local neural TTS. Download a `.onnx` voice model and set
-  `model_path` (and `config_path`) under `[voice]`.
-- **System**: OS TTS via `pyttsx3`.
-- **Noop**: silent fallback — always available, never crashes.
-
-Only short, curated status strings are ever spoken (e.g. "Running the test
-suite."). Raw model output, file contents, shell output, and secrets are never
-voiced. The default preset `"jarvis-inspired"` is a calm/concise/technical
-*style* — not a cloned voice.
-
-### Input (STT) + mic modes
+`install.sh` sets this up for you. It speaks **short status** as it works — and,
+because the model narrates intent, *what it's trying to build* ("Refactoring the
+parser to handle nested calls"), not just "writing a file".
 
 ```bash
-pip install -e ".[stt]"
+jarvis voices test     # speak a test phrase; prints which voice is in use
+jarvis voices list     # engine availability + what would be used
+jarvis --voice false   # mute output for a run   (--voice true forces it on)
 ```
 
-Set `[voice.input] enabled = true` and choose a `mode`:
+Engines (config `[voice] engine`): **piper** (local neural — the realistic
+default, e.g. the British `alan` model `install.sh` downloads) · **system**
+(macOS `say` / pyttsx3) · **noop** (silent fallback). Selection falls back
+gracefully, so it never crashes if a voice is missing.
 
-- **Open Mic** — continuous listening (VAD/wake-word gated to avoid noise).
-- **Push to Talk** — records only while held (`Space`); `V` toggles recording.
+> **Want an even better voice?** On macOS you can download a Premium neural
+> system voice (System Settings → Accessibility → Spoken Content → Manage
+> Voices). To use a specific voice, set `[voice] default_voice` or point
+> `model_path` at any Piper `.onnx`. See `docs/voice.md`.
+
+**Privacy:** only short, curated/redacted status is spoken — never secrets, file
+contents, or shell output. The model's one-line *reason* is spoken only when
+`speak_intent = true` (the installed default); set it to `false` for fixed
+phrases only. `"jarvis-inspired"` is a *style*, not a cloned actor voice.
+
+### Input — talk to jarvis with `/talk`
+
+In a chat, type **`/talk`** (or `/ptt`): speak, press **Enter** to stop, and your
+words are transcribed **locally** (faster-whisper) and run as your next turn. The
+first use downloads a small model once, then it's fully offline. If voice input
+is off, Muted, or the engine is missing, `/talk` tells you exactly what to do.
+
+Enable it in config (`install.sh`’s default does this):
+
+```toml
+[voice.input]
+enabled = true
+mode = "push_to_talk"     # open_mic | push_to_talk | muted
+```
+
+- **Push to Talk** — capture only between `/talk` and Enter.
+- **Open Mic** — continuous capture (VAD-gated).
 - **Muted** — the mic is fully off: **nothing is recorded, transcribed, or
   stored.**
 
-Local STT (`faster-whisper` or `vosk`) is the default. Cloud STT is refused
-unless you set `allow_cloud_stt = true`. The terminal shows the active mode:
-
-```
-Mic: [Open Mic] [>Push to Talk<] [Muted]
-```
-
-In an interactive session, type **`/talk`** to push-to-talk: speak your message,
-press **Enter** to stop, and the local transcript becomes your next turn. If
-voice input is off, Muted, or STT isn't installed, `/talk` says why and records
-nothing.
-
-Voice input and output are independent — you can enable one without the other.
-
----
-
-## Keyboard controls (interactive voice mode)
-
-```
-M       cycle mic mode (Open Mic / Push to Talk / Muted)
-V       toggle push-to-talk recording
-Space   hold-to-talk in Push to Talk mode
-Esc     soft interrupt (finish the current safe step, then adjust)
-Ctrl+C  hard stop / exit
-?       show controls
-```
-
-Live speech/text is classified into **steering** (folded into the plan),
-**questions** (answered briefly while work continues), **soft/hard interrupts**,
-and **permission responses** (routed to the active 1/2/3 prompt — one path, no
-parallel permission system).
+Output and input are independent — enable either alone.
 
 ---
 
@@ -206,13 +214,14 @@ parallel permission system).
 ```
 jarvis                                start an interactive chat session (REPL)
 jarvis "<task>"                       run the agent on a single task, then exit
-jarvis --mode plan|auto|dangerous     select permission mode
+jarvis --mode plan|auto|dangerous     select permission mode (default: auto)
+jarvis --voice true|false             voice output on/off for this run (default: on)
 jarvis --sandbox <path>               set the sandbox root
 jarvis --provider <p> --model <m>     override provider/model
-jarvis init                           scaffold .jarvis/
+jarvis init [--global]                scaffold .jarvis/  (or a per-user global config)
 jarvis doctor                         environment + config health checks
 jarvis config path | validate         config helpers
-jarvis voices list | test             voice engine info
+jarvis voices list | test             voice engine info (test prints the active voice)
 jarvis --help | --version
 ```
 

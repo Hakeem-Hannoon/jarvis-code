@@ -6,13 +6,35 @@ from pathlib import Path
 
 import typer
 
-from jarvis_code.config import DEFAULT_CONFIG_TEMPLATE
+from jarvis_code.config import DEFAULT_CONFIG_TEMPLATE, global_config_path
 from jarvis_code.sandbox import Sandbox, SandboxRootError, resolve_sandbox_root
 
 from .options import GlobalOptions
 
 
-def run_init(opts: GlobalOptions) -> int:
+def run_init_global() -> int:
+    """Create the per-user global config (~/.config/jarvis/config.toml)."""
+    path = global_config_path()
+    if path.exists():
+        typer.echo(f"Global config already exists, leaving it untouched: {path}")
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(DEFAULT_CONFIG_TEMPLATE)
+    # The global config may hold a real key; restrict to the owner.
+    try:
+        path.chmod(0o600)
+        path.parent.chmod(0o700)
+    except OSError:  # pragma: no cover - non-POSIX or odd perms
+        pass
+    typer.echo(typer.style(f"Created {path}", fg=typer.colors.GREEN))
+    typer.echo("Edit it (add a provider key); jarvis will use it from any directory")
+    typer.echo("that has no project-local .jarvis/config.toml.")
+    return 0
+
+
+def run_init(opts: GlobalOptions, *, global_config: bool = False) -> int:
+    if global_config:
+        return run_init_global()
     try:
         root = resolve_sandbox_root(Path.cwd(), opts.sandbox)
     except SandboxRootError as exc:

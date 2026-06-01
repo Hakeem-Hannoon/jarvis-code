@@ -33,18 +33,37 @@ def env_var_for(provider: str) -> str:
     return f"{provider.upper()}_API_KEY"
 
 
+def global_config_path() -> Path:
+    """The primary global (per-user) config path. Honors XDG_CONFIG_HOME."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "jarvis" / "config.toml"
+
+
+def _global_candidates() -> list[Path]:
+    return [global_config_path(), Path.home() / ".jarvis" / "config.toml"]
+
+
 def find_config_path(base_dir: str | os.PathLike[str] | None = None) -> Path | None:
-    """Return the first existing config file under ``base_dir`` (default cwd)."""
+    """Find the config file.
+
+    Project-local first (``<base>/.jarvis/config.toml`` or ``.jarvis.toml``) so a
+    project can override, then the per-user global config — so you can configure
+    once and run ``jarvis`` in any directory.
+    """
     base = Path(base_dir) if base_dir is not None else Path.cwd()
     for candidate in _CONFIG_CANDIDATES:
         path = base / candidate
+        if path.is_file():
+            return path
+    for path in _global_candidates():
         if path.is_file():
             return path
     return None
 
 
 def default_config_path(base_dir: str | os.PathLike[str] | None = None) -> Path:
-    """The canonical config path (whether or not it exists yet)."""
+    """The canonical project-local config path (whether or not it exists yet)."""
     base = Path(base_dir) if base_dir is not None else Path.cwd()
     return base / _CONFIG_CANDIDATES[0]
 

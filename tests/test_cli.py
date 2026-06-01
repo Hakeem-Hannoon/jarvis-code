@@ -133,6 +133,43 @@ def test_run_task_no_config_friendly_error(tmp_path: Path) -> None:
 # -- voices -----------------------------------------------------------------
 
 
+def test_global_config_fallback(tmp_path: Path, monkeypatch) -> None:
+    # A project with no local config falls back to the per-user global config.
+    from jarvis_code.config import find_config_path, global_config_path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    gpath = global_config_path()
+    gpath.parent.mkdir(parents=True, exist_ok=True)
+    gpath.write_text(
+        f'default_provider = "anthropic"\n[providers.anthropic]\napi_key = "{KEY}"\nmodel = "m"\n'
+    )
+    project = tmp_path / "empty-project"
+    project.mkdir()
+    assert find_config_path(project) == gpath  # found via global fallback
+
+
+def test_local_config_overrides_global(tmp_path: Path, monkeypatch) -> None:
+    from jarvis_code.config import find_config_path, global_config_path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    gpath = global_config_path()
+    gpath.parent.mkdir(parents=True, exist_ok=True)
+    gpath.write_text('default_provider = "anthropic"\n[providers.anthropic]\napi_key=""\nmodel="m"\n')
+    project = tmp_path / "proj"
+    _config_with_key(project)
+    assert find_config_path(project) == project / ".jarvis" / "config.toml"
+
+
+def test_init_global_creates_user_config(tmp_path: Path, monkeypatch) -> None:
+    from jarvis_code.config import global_config_path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    result = runner.invoke(app, ["init", "--global"])
+    assert result.exit_code == 0
+    assert global_config_path().is_file()
+    assert "[providers.anthropic]" in global_config_path().read_text()
+
+
 def test_voices_list_runs(tmp_path: Path) -> None:
     result = runner.invoke(app, ["--sandbox", str(tmp_path), "voices", "list"])
     assert result.exit_code == 0

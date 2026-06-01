@@ -92,9 +92,16 @@ def run_cmd(
 
 
 @app.command("init")
-def init_cmd(ctx: typer.Context) -> None:
-    """Create a git-ignored .jarvis/ with config, sessions, and voices dirs."""
-    raise typer.Exit(run_init(ctx.obj or GlobalOptions()))
+def init_cmd(
+    ctx: typer.Context,
+    global_config: bool = typer.Option(
+        False, "--global", "-g",
+        help="Create a per-user global config (~/.config/jarvis/config.toml) "
+        "used from any directory without a project-local config.",
+    ),
+) -> None:
+    """Create a git-ignored .jarvis/ (or, with --global, a per-user config)."""
+    raise typer.Exit(run_init(ctx.obj or GlobalOptions(), global_config=global_config))
 
 
 @app.command("doctor")

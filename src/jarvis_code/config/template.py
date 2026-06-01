@@ -47,9 +47,9 @@ api_version = "2024-06-01"
 # endpoint_style = "openai_v1"
 
 [voice]
-enabled = false
-engine = "piper"                # piper | system | noop
-default_voice = "jarvis-inspired"
+enabled = true                  # voice output on by default; --voice false to mute
+engine = "system"               # piper | system | noop (system = macOS `say`)
+default_voice = "jarvis-inspired"   # maps to a British male `say` voice (Daniel)
 model_path = ""
 config_path = ""
 fallback_engine = "system"

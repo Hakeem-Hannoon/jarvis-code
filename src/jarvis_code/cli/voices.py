@@ -72,6 +72,21 @@ def voices_test(opts: GlobalOptions) -> int:
                 fg=typer.colors.YELLOW,
             )
         )
+    elif engine.name == "system":
+        from jarvis_code.voice import active_say_voice
+
+        name = active_say_voice(voice.default_voice)
+        typer.echo(f"Spoke via the 'system' engine (macOS say voice: {name}).")
+        if name == "Daniel" or name == "system default":
+            typer.echo(
+                typer.style(
+                    "Tip: that's a robotic compact voice. For a realistic JARVIS, download a "
+                    "Premium voice: System Settings → Accessibility → Spoken Content → "
+                    "System Voice → Manage Voices → English (UK) → 'Daniel (Premium)' or "
+                    "'Oliver (Premium)'. jarvis will use it automatically.",
+                    fg=typer.colors.YELLOW,
+                )
+            )
     else:
         typer.echo(f"Spoke via the '{engine.name}' engine.")
     return 0

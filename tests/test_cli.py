@@ -60,6 +60,30 @@ def test_inject_accounts_for_value_options() -> None:
         "--sandbox", "/x", "run", "do", "it",
     ]
     assert inject_default_command(["--mode=plan", "task"]) == ["--mode=plan", "run", "task"]
+    # --voice takes a value, so its value is not mistaken for a task token
+    assert inject_default_command(["--voice", "false", "explain"]) == [
+        "--voice", "false", "run", "explain",
+    ]
+    assert inject_default_command(["--voice", "true", "doctor"]) == ["--voice", "true", "doctor"]
+
+
+# -- --voice flag -----------------------------------------------------------
+
+
+def test_parse_voice_values() -> None:
+    from jarvis_code.cli.options import parse_voice
+
+    assert parse_voice(None) is None  # unset -> use config
+    assert parse_voice("true") is True and parse_voice("on") is True
+    assert parse_voice("false") is False and parse_voice("off") is False
+    with pytest.raises(ValueError):
+        parse_voice("maybe")
+
+
+def test_voice_flag_rejects_bad_value(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["--voice", "maybe", "doctor"])
+    assert result.exit_code == 2
+    assert "invalid --voice" in result.output
 
 
 # -- jarvis init ------------------------------------------------------------

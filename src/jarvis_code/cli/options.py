@@ -13,6 +13,8 @@ class GlobalOptions:
     provider: str | None = None
     model: str | None = None
     mode: PermissionMode = PermissionMode.AUTO
+    # None = use the config value; True/False = override voice output for this run.
+    voice: bool | None = None
 
 
 def parse_mode(value: str) -> PermissionMode:
@@ -20,3 +22,19 @@ def parse_mode(value: str) -> PermissionMode:
         return PermissionMode(value)
     except ValueError as exc:  # pragma: no cover - Typer validates the choices
         raise ValueError(f"invalid mode '{value}'") from exc
+
+
+_TRUE = {"true", "t", "yes", "y", "on", "1"}
+_FALSE = {"false", "f", "no", "n", "off", "0"}
+
+
+def parse_voice(value: str | None) -> bool | None:
+    """Parse the --voice value. None/empty -> use config; else true/false."""
+    if value is None:
+        return None
+    v = value.strip().lower()
+    if v in _TRUE:
+        return True
+    if v in _FALSE:
+        return False
+    raise ValueError(f"invalid --voice value '{value}' (use true or false)")

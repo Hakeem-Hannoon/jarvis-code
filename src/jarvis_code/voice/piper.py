@@ -53,17 +53,17 @@ class PiperVoiceEngine:
 
     def _speak_blocking(self, text: str, options: SpeakOptions) -> None:  # pragma: no cover
         try:
+            import numpy as np  # type: ignore
             import sounddevice as sd  # type: ignore
             from piper.voice import PiperVoice  # type: ignore
 
             voice = PiperVoice.load(self.model_path, config_path=self.config_path or None)
-            for chunk in voice.synthesize_stream_raw(text):
+            default_sr = getattr(getattr(voice, "config", None), "sample_rate", 22050)
+            for chunk in voice.synthesize(text):  # piper-tts 1.x yields AudioChunk
                 if self._stop:
                     break
-                import numpy as np  # type: ignore
-
-                audio = np.frombuffer(chunk, dtype="int16")
-                sd.play(audio, samplerate=voice.config.sample_rate)
+                audio = np.frombuffer(chunk.audio_int16_bytes, dtype="int16")
+                sd.play(audio, samplerate=getattr(chunk, "sample_rate", default_sr))
                 sd.wait()
         except Exception as exc:  # never crash the agent over speech
             _log.warning("piper TTS failed (%s); continuing silently", exc)

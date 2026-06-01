@@ -12,24 +12,39 @@ voice I/O. Installs a command called **`jarvis`**.
 
 ## Quick start
 
+Clone and run once — `jarvis` then works from **any** directory:
+
 ```bash
 git clone <repo-url> jarvis-code
 cd jarvis-code
+./install.sh                  # installs jarvis on PATH (pipx, or venv + ~/.local/bin)
+                              # and creates a per-user global config
 
-python3 -m venv .venv && . .venv/bin/activate     # Python 3.11+
-pip install -e ".[dev]"
+jarvis doctor                 # health checks (works before adding a key)
+# add a key to ~/.config/jarvis/config.toml, OR export e.g. AZURE_API_KEY=...
 
-jarvis doctor                 # health checks (works before init)
-jarvis init                   # scaffold a git-ignored .jarvis/ with config
-# edit .jarvis/config.toml and add a key, OR export ANTHROPIC_API_KEY=...
-
-jarvis                        # start an interactive chat session
+cd ~/any/project
+jarvis                        # interactive chat — picks up the global config anywhere
 jarvis --mode plan "explain this project"   # or run a single task and exit
 ```
 
+<details><summary>Manual install (no install.sh)</summary>
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate     # Python 3.11+
+pip install -e ".[dev]"
+jarvis init --global          # per-user config, used from any directory
+```
+</details>
+
 Running `jarvis` with no task drops you into a **live chat**: a persistent
 conversation where each line is a turn and context carries across turns. In-chat
-commands: `/help`, `/mode plan|auto|dangerous`, `/sandbox`, `/exit` (or Ctrl-D).
+commands: `/help`, `/talk` (push-to-talk), `/mode plan|auto|dangerous`,
+`/sandbox`, `/exit` (or Ctrl-D).
+
+**Voice output is on by default** (local macOS `say`, British "Daniel" voice for
+the JARVIS-style preset). Mute a run with `--voice false`, or force it on with
+`--voice true`. The agent runs with **no step limit** by default.
 
 `jarvis doctor` works before `jarvis init` and tells you exactly what's missing.
 Optional voice extras: `pip install -e ".[voice]"` (TTS) and `".[stt]"` (speech

@@ -117,6 +117,34 @@ def test_say_argv_scales_rate_and_sets_volume() -> None:
     assert argv[-1] == "[[volm 0.50]] Reading a file."
 
 
+def test_say_argv_includes_voice_when_given() -> None:
+    argv = say_argv("Hi there.", SpeakOptions(), say_bin="say", voice="Daniel")
+    assert argv[:3] == ["say", "-v", "Daniel"]
+    assert argv[-1].endswith("Hi there.")
+    # no voice -> no -v flag
+    assert "-v" not in say_argv("Hi.", SpeakOptions(), say_bin="say")
+
+
+def test_resolve_say_voice_maps_jarvis_preset(monkeypatch) -> None:
+    monkeypatch.setattr(vsystem, "_available_say_voices", lambda: {"Daniel", "Alex"})
+    assert vsystem._resolve_say_voice("jarvis-inspired") == "Daniel"  # JARVIS -> British male
+    assert vsystem._resolve_say_voice("Alex") == "Alex"               # real voice passes through
+    assert vsystem._resolve_say_voice("Nope") is None                 # unknown -> no -v
+    # if no candidate is installed, degrade rather than pass an invalid -v
+    monkeypatch.setattr(vsystem, "_available_say_voices", lambda: {"Zoe"})
+    assert vsystem._resolve_say_voice("jarvis-inspired") is None
+
+
+def test_resolve_say_voice_prefers_premium(monkeypatch) -> None:
+    # The natural neural variant wins over the robotic compact voice.
+    monkeypatch.setattr(
+        vsystem, "_available_say_voices", lambda: {"Daniel", "Daniel (Premium)", "Arthur"}
+    )
+    assert vsystem._resolve_say_voice("jarvis-inspired") == "Daniel (Premium)"
+    monkeypatch.setattr(vsystem, "_available_say_voices", lambda: {"Alex", "Alex (Enhanced)"})
+    assert vsystem._resolve_say_voice("Alex") == "Alex (Enhanced)"
+
+
 def test_system_available_when_say_present(monkeypatch) -> None:
     monkeypatch.setattr(vsystem, "_say_path", lambda: "/usr/bin/say")
     monkeypatch.setattr(vsystem, "_pyttsx3_available", lambda: False)
@@ -223,7 +251,17 @@ def test_specific_action_phrase_uses_program_name_for_shell() -> None:
     assert vmsg.specific_action_phrase("run_shell", "") == "Running a command."
     # argument values are never voiced — only the program name
     assert "status" not in vmsg.specific_action_phrase("run_shell", "git status -sb")
-    assert vmsg.specific_action_phrase("read_file", "/x/y") == "Reading a file."
+
+
+def test_specific_action_phrase_names_file_by_basename() -> None:
+    assert vmsg.specific_action_phrase("write_file", "src/pkg/config.toml") == "Writing config.toml."
+    assert vmsg.specific_action_phrase("read_file", "/proj/loop.py") == "Reading loop.py."
+    assert vmsg.specific_action_phrase("edit_file", "a/b/main.py") == "Editing main.py."
+    # only the basename is spoken — never the directory tree
+    out = vmsg.specific_action_phrase("read_file", "/secret/dir/notes.md")
+    assert "secret" not in out and out == "Reading notes.md."
+    # no path -> generic fallback, never a crash
+    assert vmsg.specific_action_phrase("write_file", "") == "Writing a file."
 
 
 def test_action_phrase_prefers_intent_then_falls_back() -> None:
@@ -242,12 +280,12 @@ async def test_reporter_speaks_model_intent_once_when_opted_in() -> None:
 
     reporter.assistant_text("I'll install the project dependencies so the tests run.")
     reporter.tool_started("run_shell", "pip install -e .")  # speaks the intent
-    reporter.tool_started("read_file", "/proj/x.py")  # no new intent -> curated
+    reporter.tool_started("read_file", "/proj/x.py")  # file op -> names the file
     await vs.drain()
     await vs.aclose()
 
     assert engine.spoken[0] == "I'll install the project dependencies so the tests run"
-    assert engine.spoken[1] == "Reading a file."
+    assert engine.spoken[1] == "Reading x.py."
     # The raw command arguments were never voiced.
     assert all("pip install -e ." not in s for s in engine.spoken)
 

@@ -27,7 +27,7 @@ from jarvis_code.permissions import PermissionMode
 from .chat import run_chat
 from .doctor import run_doctor
 from .init import run_init
-from .options import GlobalOptions
+from .options import GlobalOptions, parse_voice
 from .run import run_task
 from .voices import voices_list, voices_test
 
@@ -69,9 +69,20 @@ def main(
         PermissionMode.AUTO, "--mode", case_sensitive=False,
         help="Permission mode: plan (read-only), auto (asks), or dangerous.",
     ),
+    voice: str = typer.Option(
+        None, "--voice",
+        help="Voice output: true or false. Default: on (override the config).",
+    ),
 ) -> None:
     """Run a task, start a chat, or use a subcommand (init, doctor, config, voices)."""
-    ctx.obj = GlobalOptions(sandbox=sandbox, provider=provider, model=model, mode=mode)
+    try:
+        voice_flag = parse_voice(voice)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    ctx.obj = GlobalOptions(
+        sandbox=sandbox, provider=provider, model=model, mode=mode, voice=voice_flag
+    )
     if ctx.invoked_subcommand is None:
         # Bare `jarvis` with no task -> interactive chat session.
         raise typer.Exit(run_chat(ctx.obj))
@@ -150,7 +161,7 @@ def voices_test_cmd(ctx: typer.Context) -> None:
 
 _SUBCOMMANDS = {"init", "doctor", "config", "voices", "run"}
 # Global options that consume the following token as their value.
-_VALUE_OPTIONS = {"--sandbox", "--provider", "--model", "--mode"}
+_VALUE_OPTIONS = {"--sandbox", "--provider", "--model", "--mode", "--voice"}
 _PASSTHROUGH = {"--help", "-h", "--version"}
 
 

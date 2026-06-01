@@ -85,7 +85,9 @@ class VoiceInputConfig(BaseModel):
 class VoiceConfig(BaseModel):
     model_config = _STRICT
 
-    enabled: bool = False
+    # Voice OUTPUT is on by default (local TTS only; degrades to silent Noop when
+    # no engine is available). The mic (voice.input) stays opt-in — see below.
+    enabled: bool = True
     engine: VoiceEngineName = VoiceEngineName.PIPER
     default_voice: str = "jarvis-inspired"
     model_path: str = ""

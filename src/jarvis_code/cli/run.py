@@ -44,10 +44,12 @@ def run_task(opts: GlobalOptions, task: str) -> int:
     typer.echo(typer.style(f"jarvis [{opts.mode.value}] · sandbox: {root}", dim=True))
     typer.echo("")
 
+    voice_on = config.voice.enabled if opts.voice is None else opts.voice
+
     async def _go():
         reporter = ConsoleReporter()
         voice_sub: VoiceSubsystem | None = None
-        if config.voice.enabled:
+        if voice_on:
             voice_sub = VoiceSubsystem(select_engine(config.voice), config.voice)
             await voice_sub.start()
             reporter = CompositeReporter([ConsoleReporter(), VoiceReporter(voice_sub)])

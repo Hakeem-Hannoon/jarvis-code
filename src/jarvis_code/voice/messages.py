@@ -72,18 +72,44 @@ def permission_request_phrase(command: str | None) -> str:
     return shorten(f"I need permission to run {program} inside the sandbox.")
 
 
-def specific_action_phrase(tool_name: str, summary: str | None) -> str:
-    """A curated action phrase, made a bit more specific where it is SAFE.
+# File tools whose spoken status names the file (basename only).
+_FILE_ACTION_VERB: dict[str, str] = {
+    "read_file": "Reading",
+    "write_file": "Writing",
+    "edit_file": "Editing",
+    "delete_file": "Deleting",
+    "move_file": "Moving",
+    "create_directory": "Creating",
+}
+FILE_TOOLS = frozenset(_FILE_ACTION_VERB)
 
-    For shell, the program name (first token only) is included — the same safe
-    subset spoken in :func:`permission_request_phrase`. Arguments are never
-    voiced. For everything else this is the plain curated phrase.
+
+def _basename(summary: str | None) -> str:
+    """The final path component only (never the full path / directory tree)."""
+    s = (summary or "").strip().replace("\\", "/").rstrip("/")
+    if not s:
+        return ""
+    return s.rsplit("/", 1)[-1][:60]
+
+
+def specific_action_phrase(tool_name: str, summary: str | None) -> str:
+    """A curated action phrase, made specific where it is SAFE.
+
+    File tools name the file by **basename only** (e.g. "Writing config.toml.")
+    — never the full path. Shell names the program (first token only). All other
+    arguments are dropped, and the result is still secret-redacted by ``shorten``.
     """
     if tool_name == "run_shell":
         tokens = (summary or "").strip().split()
         if tokens:
             return shorten(f"Running the {tokens[0]} command.")
         return _CATALOG["running_command"]
+    verb = _FILE_ACTION_VERB.get(tool_name)
+    if verb:
+        name = _basename(summary)
+        if name:
+            return shorten(f"{verb} {name}.")
+        return tool_status_phrase(tool_name) or f"{verb} a file."
     return tool_status_phrase(tool_name) or "Working."
 
 
@@ -111,8 +137,14 @@ def clean_intent(text: str | None) -> str | None:
 
 
 def action_phrase(tool_name: str, summary: str | None, intent: str | None = None) -> str:
-    """The line to speak for a tool. With an opted-in ``intent``, speak the
-    model's short reason; otherwise speak the curated/specific action phrase."""
+    """The line to speak for a tool.
+
+    File operations always name the file ("Writing config.toml.") — that is more
+    useful than a generic reason. For other tools, an opted-in ``intent`` (the
+    model's short reason) is spoken when present, else the specific phrase.
+    """
+    if tool_name in FILE_TOOLS:
+        return specific_action_phrase(tool_name, summary)
     cleaned = clean_intent(intent)
     if cleaned:
         return cleaned

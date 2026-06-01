@@ -10,6 +10,7 @@ or the step limit.
 from __future__ import annotations
 
 import asyncio
+import itertools
 from dataclasses import dataclass
 from enum import Enum
 
@@ -63,7 +64,7 @@ class AgentRuntime:
         context: ConversationContext,
         session: SessionWriter,
         state: RunState,
-        max_steps: int = 20,
+        max_steps: int | None = None,
         reporter: Reporter | None = None,
         instructions: InstructionQueue | None = None,
         bus: EventBus | None = None,
@@ -117,7 +118,11 @@ class AgentRuntime:
         self.context.add_user(user_request)
         self.bus.emit(EventType.USER_TEXT_INPUT, text=user_request)
 
-        for step in range(1, self.max_steps + 1):
+        # max_steps None or <= 0 means no limit (run until complete/blocked or a
+        # user interrupt). Otherwise cap at max_steps.
+        unlimited = self.max_steps is None or self.max_steps <= 0
+        steps = itertools.count(1) if unlimited else range(1, self.max_steps + 1)
+        for step in steps:
             self.bus.emit(EventType.AGENT_STEP_STARTED, step=step)
             if not self._checkpoint("before_model_call"):
                 return self._aborted_result(step)
@@ -235,7 +240,7 @@ def assemble_runtime(
     reporter: Reporter | None = None,
     instructions: InstructionQueue | None = None,
     bus: EventBus | None = None,
-    max_steps: int = 20,
+    max_steps: int | None = None,
 ) -> AgentRuntime:
     """Wire up a runtime. ``provider`` may be injected (tests); else built from config."""
     bus = bus if bus is not None else EventBus()

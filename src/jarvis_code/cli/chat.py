@@ -61,11 +61,12 @@ def run_chat(opts: GlobalOptions) -> int:
         return 1
 
     mic = build_mic_controller(config.voice.input)
+    voice_on = config.voice.enabled if opts.voice is None else opts.voice
 
     async def _go() -> int:
         reporter = ConsoleReporter()
         voice_sub: VoiceSubsystem | None = None
-        if config.voice.enabled:
+        if voice_on:
             voice_sub = VoiceSubsystem(select_engine(config.voice), config.voice)
             await voice_sub.start()
             reporter = CompositeReporter([ConsoleReporter(), VoiceReporter(voice_sub)])

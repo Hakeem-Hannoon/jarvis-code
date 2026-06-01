@@ -43,6 +43,15 @@ needed, and it plays reliably (jarvis speaks from a worker thread, where the
 pyttsx3 driver is silent on macOS). `pyttsx3` is used as the `system` backend on
 other platforms.
 
+**Voice realism (macOS).** The `default_voice = "jarvis-inspired"` preset maps to
+a British male `say` voice and auto-prefers a natural **Premium/Enhanced** neural
+variant if installed (e.g. `Oliver (Premium)`, `Daniel (Premium)`), falling back
+to the robotic compact `Daniel` otherwise. Download a premium voice once via
+**System Settings → Accessibility → Spoken Content → System Voice → Manage
+Voices → English (UK)** and jarvis uses it automatically. `jarvis voices test`
+prints the voice it will use. You can also set `default_voice` to any exact `say`
+voice name. (Voice output is on by default; mute a run with `--voice false`.)
+
 ### What is spoken
 
 Only short, curated status strings from a fixed catalog (e.g. "Scanning the

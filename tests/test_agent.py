@@ -238,3 +238,44 @@ def test_compaction_noop_when_small() -> None:
     ctx = ConversationContext("SYSTEM", max_chars=10_000)
     ctx.add_user("hello")
     assert ctx.compact(RunState(goal="g")) is False
+
+
+# -- step limit: unlimited by default, still cappable -----------------------
+
+
+class _AlwaysToolProvider:
+    model = "loop"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, messages, tools=None):
+        self.calls += 1
+        return ModelResponse(tool_calls=[ToolCall(f"c{self.calls}", "list_files", {"path": "."})])
+
+
+@pytest.mark.asyncio
+async def test_unlimited_steps_by_default_runs_past_old_cap(fixture_repo: Sandbox) -> None:
+    # 25 tool-call rounds then a finish — more than the old default of 20.
+    responses = [
+        ModelResponse(tool_calls=[ToolCall(f"c{i}", "list_files", {"path": "."})])
+        for i in range(25)
+    ] + [ModelResponse(text="Done.")]
+    runtime = assemble_runtime(
+        config=_config(), sandbox=fixture_repo, mode=PermissionMode.PLAN,
+        provider=FakeProvider(responses),
+    )
+    result = await runtime.run("look around a lot")
+    assert result.status == RunStatus.COMPLETE
+    assert result.steps == 26  # would have stopped at 20 under the old default
+
+
+@pytest.mark.asyncio
+async def test_max_steps_can_still_be_capped(fixture_repo: Sandbox) -> None:
+    runtime = assemble_runtime(
+        config=_config(), sandbox=fixture_repo, mode=PermissionMode.PLAN,
+        provider=_AlwaysToolProvider(), max_steps=3,
+    )
+    result = await runtime.run("loop forever")
+    assert result.status == RunStatus.MAX_STEPS
+    assert result.steps == 3

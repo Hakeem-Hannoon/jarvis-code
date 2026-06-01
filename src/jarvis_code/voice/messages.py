@@ -12,20 +12,22 @@ from __future__ import annotations
 from jarvis_code.utils.logging import redact
 
 # Curated, fixed phrases. Keyed by an internal status event.
+# Cinematic, calm-assistant tone (think a certain Iron Man AI). Still short,
+# fixed, curated status strings — never raw model output, and still redacted.
 _CATALOG: dict[str, str] = {
-    "scanning": "Scanning the project.",
-    "reading": "Reading a file.",
-    "searching": "Searching the project.",
-    "editing": "Applying an edit.",
-    "writing": "Writing a file.",
-    "running_tests": "Running the test suite.",
-    "running_command": "Running a command.",
-    "found_failing_test": "I found the failing test.",
-    "launching_subagent": "Launching a focused sub-agent.",
-    "requesting_permission": "Requesting permission to run a command.",
-    "permission_denied": "Permission denied. Choosing another route.",
-    "done": "Task complete.",
-    "blocked": "I am blocked and need direction.",
+    "scanning": "Surveying the project.",
+    "reading": "Accessing the file.",
+    "searching": "Sweeping the codebase.",
+    "editing": "Applying modifications.",
+    "writing": "Writing to disk.",
+    "running_tests": "Running diagnostics.",
+    "running_command": "Executing your command.",
+    "found_failing_test": "I've isolated the failing test, sir.",
+    "launching_subagent": "Deploying a specialist unit.",
+    "requesting_permission": "Awaiting your authorization.",
+    "permission_denied": "Understood. Rerouting.",
+    "done": "All systems nominal. Task complete, sir.",
+    "blocked": "I require further direction, sir.",
 }
 
 # Map tool names to a curated status key (so we never voice tool args/output).
@@ -69,16 +71,16 @@ def permission_request_phrase(command: str | None) -> str:
         tokens = command.strip().split()
         if tokens:
             program = tokens[0]
-    return shorten(f"I need permission to run {program} inside the sandbox.")
+    return shorten(f"Awaiting your authorization to run {program}, sir.")
 
 
 # File tools whose spoken status names the file (basename only).
 _FILE_ACTION_VERB: dict[str, str] = {
-    "read_file": "Reading",
+    "read_file": "Accessing",
     "write_file": "Writing",
-    "edit_file": "Editing",
-    "delete_file": "Deleting",
-    "move_file": "Moving",
+    "edit_file": "Modifying",
+    "delete_file": "Removing",
+    "move_file": "Relocating",
     "create_directory": "Creating",
 }
 FILE_TOOLS = frozenset(_FILE_ACTION_VERB)
@@ -102,7 +104,7 @@ def specific_action_phrase(tool_name: str, summary: str | None) -> str:
     if tool_name == "run_shell":
         tokens = (summary or "").strip().split()
         if tokens:
-            return shorten(f"Running the {tokens[0]} command.")
+            return shorten(f"Executing the {tokens[0]} command.")
         return _CATALOG["running_command"]
     verb = _FILE_ACTION_VERB.get(tool_name)
     if verb:

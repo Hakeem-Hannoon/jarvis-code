@@ -48,9 +48,9 @@ class FakeEngine:
 
 
 def test_tool_status_phrases_are_curated() -> None:
-    assert vmsg.tool_status_phrase("run_shell") == "Running a command."
-    assert vmsg.tool_status_phrase("read_file") == "Reading a file."
-    assert vmsg.tool_status_phrase("search_files") == "Searching the project."
+    assert vmsg.tool_status_phrase("run_shell") == "Executing your command."
+    assert vmsg.tool_status_phrase("read_file") == "Accessing the file."
+    assert vmsg.tool_status_phrase("search_files") == "Sweeping the codebase."
     # all phrases are short
     for tool in ("list_files", "edit_file", "git_diff", "spawn_subagent"):
         assert len(vmsg.tool_status_phrase(tool)) <= 60
@@ -217,7 +217,7 @@ async def test_subsystem_speaks_curated_and_drains() -> None:
     vs.announce_status("running_tests")
     await vs.drain()
     await vs.aclose()
-    assert engine.spoken == ["Running a command.", "Running the test suite."]
+    assert engine.spoken == ["Executing your command.", "Running diagnostics."]
 
 
 @pytest.mark.asyncio
@@ -247,28 +247,28 @@ def test_clean_intent_first_sentence_capped_and_redacted() -> None:
 
 
 def test_specific_action_phrase_uses_program_name_for_shell() -> None:
-    assert vmsg.specific_action_phrase("run_shell", "git status -sb") == "Running the git command."
-    assert vmsg.specific_action_phrase("run_shell", "") == "Running a command."
+    assert vmsg.specific_action_phrase("run_shell", "git status -sb") == "Executing the git command."
+    assert vmsg.specific_action_phrase("run_shell", "") == "Executing your command."
     # argument values are never voiced — only the program name
     assert "status" not in vmsg.specific_action_phrase("run_shell", "git status -sb")
 
 
 def test_specific_action_phrase_names_file_by_basename() -> None:
     assert vmsg.specific_action_phrase("write_file", "src/pkg/config.toml") == "Writing config.toml."
-    assert vmsg.specific_action_phrase("read_file", "/proj/loop.py") == "Reading loop.py."
-    assert vmsg.specific_action_phrase("edit_file", "a/b/main.py") == "Editing main.py."
+    assert vmsg.specific_action_phrase("read_file", "/proj/loop.py") == "Accessing loop.py."
+    assert vmsg.specific_action_phrase("edit_file", "a/b/main.py") == "Modifying main.py."
     # only the basename is spoken — never the directory tree
     out = vmsg.specific_action_phrase("read_file", "/secret/dir/notes.md")
-    assert "secret" not in out and out == "Reading notes.md."
+    assert "secret" not in out and out == "Accessing notes.md."
     # no path -> generic fallback, never a crash
-    assert vmsg.specific_action_phrase("write_file", "") == "Writing a file."
+    assert vmsg.specific_action_phrase("write_file", "") == "Writing to disk."
 
 
 def test_action_phrase_prefers_intent_then_falls_back() -> None:
     assert vmsg.action_phrase("run_shell", "pip install x", intent="Installing the deps.") == (
         "Installing the deps"
     )
-    assert vmsg.action_phrase("run_shell", "git status", intent=None) == "Running the git command."
+    assert vmsg.action_phrase("run_shell", "git status", intent=None) == "Executing the git command."
 
 
 @pytest.mark.asyncio
@@ -285,7 +285,7 @@ async def test_reporter_speaks_model_intent_once_when_opted_in() -> None:
     await vs.aclose()
 
     assert engine.spoken[0] == "I'll install the project dependencies so the tests run"
-    assert engine.spoken[1] == "Reading x.py."
+    assert engine.spoken[1] == "Accessing x.py."
     # The raw command arguments were never voiced.
     assert all("pip install -e ." not in s for s in engine.spoken)
 
@@ -302,7 +302,7 @@ async def test_reporter_intent_off_by_default_stays_curated() -> None:
     await vs.drain()
     await vs.aclose()
 
-    assert engine.spoken == ["Reading a file."]  # model text never spoken
+    assert engine.spoken == ["Accessing the file."]  # model text never spoken
 
 
 @pytest.mark.asyncio
@@ -346,5 +346,5 @@ async def test_no_file_contents_or_secrets_reach_engine() -> None:
     assert secret not in joined
     assert "file contents" not in joined
     # only curated phrases were spoken
-    assert "Reading a file." in engine.spoken
-    assert "Permission denied. Choosing another route." in engine.spoken
+    assert "Accessing the file." in engine.spoken
+    assert "Understood. Rerouting." in engine.spoken

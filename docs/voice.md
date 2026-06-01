@@ -4,8 +4,9 @@ Voice is entirely optional and off until enabled in config. Install the extras
 only if you want it:
 
 ```bash
-pip install -e ".[voice]"   # TTS: piper-tts, pyttsx3, sounddevice
-pip install -e ".[stt]"     # STT: faster-whisper, vosk, sounddevice, webrtcvad
+pip install -e ".[voice]"     # TTS: piper-tts, pyttsx3, sounddevice
+pip install -e ".[stt]"       # STT: faster-whisper + sounddevice (for /talk)
+pip install -e ".[stt-vosk]"  # optional alternative STT engine: vosk + webrtcvad
 ```
 
 Everything degrades cleanly: with nothing installed, output uses the silent
@@ -104,8 +105,13 @@ it records from the mic, you press **Enter** to stop, it transcribes locally, an
 the transcript becomes your next message. Requirements:
 
 ```bash
-pip install -e ".[stt]"        # faster-whisper / vosk + sounddevice
+pip install -e ".[stt]"        # faster-whisper + sounddevice
 ```
+
+The mic captures 16 kHz mono PCM, which is fed directly to faster-whisper as
+float32 samples (no file/ffmpeg round-trip). The "base" model downloads once on
+first use, then runs fully offline. Installing faster-whisper also downgrades
+Typer to <0.26 (a `huggingface-hub` pin) — harmless for jarvis.
 
 and in config: `[voice.input] enabled = true` with `mode = "push_to_talk"` (or
 `open_mic`). If voice input is off, Muted, or the mic/STT backend isn't

@@ -178,6 +178,39 @@ async def test_chat_talk_without_mic_configured() -> None:
     assert any("isn't configured" in o for o in out)
 
 
+# -- line editing + banner helpers ------------------------------------------
+
+
+def test_history_path_lives_with_global_config(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    from jarvis_code.cli.lineedit import history_path
+
+    p = history_path()
+    assert p.name == "history" and "jarvis" in str(p)
+
+
+def test_colored_prompt_readline_safe_only_when_active(monkeypatch) -> None:
+    import jarvis_code.cli.lineedit as le
+
+    monkeypatch.setattr(le, "_active", False)
+    plain = le.colored_prompt("you ❯ ")
+    assert "you ❯ " in plain and "\001" not in plain  # no readline markers
+
+    monkeypatch.setattr(le, "_active", True)
+    wrapped = le.colored_prompt("you ❯ ")
+    # ANSI codes wrapped in \001..\002 so readline measures width correctly
+    assert wrapped.startswith("\001") and "\002" in wrapped and "you ❯ " in wrapped
+
+
+def test_short_path_collapses_home() -> None:
+    from pathlib import Path
+
+    from jarvis_code.cli.chat import _short_path
+
+    assert _short_path(Path.home() / "proj" / "x") == "~/proj/x"
+    assert _short_path(Path("/var/tmp/elsewhere")) == "/var/tmp/elsewhere"
+
+
 @pytest.mark.asyncio
 async def test_chat_handles_provider_error_and_continues() -> None:
     out: list[str] = []

@@ -24,6 +24,7 @@ from jarvis_code.permissions import PermissionMode, TerminalPrompter
 from jarvis_code.sandbox import Sandbox, SandboxRootError, resolve_sandbox_root
 from jarvis_code.voice import VoiceReporter, VoiceSubsystem, select_engine
 
+from .lineedit import colored_prompt, save_history, setup_line_editing
 from .options import GlobalOptions
 from .ui import CompositeReporter, ConsoleReporter
 
@@ -37,6 +38,8 @@ Commands:
   /mode plan|auto|dangerous   switch permission mode for the rest of the session
   /sandbox              show the current sandbox root
   /exit (or Ctrl-D)     leave the chat
+
+Editing: ↑/↓ history · ←/→ move · Ctrl-A/E start/end · Ctrl-K/U kill · Ctrl-W del word
 Anything else is sent to the agent as your next message."""
 
 _DANGEROUS_WARNING = (
@@ -66,8 +69,11 @@ def run_chat(opts: GlobalOptions) -> int:
     async def _go() -> int:
         reporter = ConsoleReporter()
         voice_sub: VoiceSubsystem | None = None
+        engine_label = config.voice.engine.value
         if voice_on:
-            voice_sub = VoiceSubsystem(select_engine(config.voice), config.voice)
+            engine = select_engine(config.voice)
+            engine_label = engine.name
+            voice_sub = VoiceSubsystem(engine, config.voice)
             await voice_sub.start()
             reporter = CompositeReporter([ConsoleReporter(), VoiceReporter(voice_sub)])
         try:
@@ -83,10 +89,12 @@ def run_chat(opts: GlobalOptions) -> int:
             typer.echo(str(exc), err=True)
             return 1
 
-        _print_banner(opts.mode, root, mic)
+        setup_line_editing()
+        _print_banner(opts.mode, root, mic, voice_on=voice_on, engine_label=engine_label)
         try:
             await chat_loop(runtime, prompt_fn=_read_line, echo=typer.echo, mic=mic)
         finally:
+            save_history()
             if voice_sub is not None:
                 await voice_sub.aclose()
         return 0
@@ -102,13 +110,38 @@ def _read_line(prompt: str) -> str:
         raise EOFError from None
 
 
-def _print_banner(mode: PermissionMode, root: Path, mic: MicController | None = None) -> None:
+def _short_path(p: Path) -> str:
+    s = str(p)
+    home = str(Path.home())
+    return "~" + s[len(home):] if s.startswith(home) else s
+
+
+def _print_banner(
+    mode: PermissionMode,
+    root: Path,
+    mic: MicController | None = None,
+    *,
+    voice_on: bool = False,
+    engine_label: str = "off",
+) -> None:
+    c = typer.colors
+    typer.echo(
+        typer.style("  JARVIS  ", fg=c.BLACK, bg=c.CYAN, bold=True)
+        + typer.style("  local coding agent", fg=c.CYAN, bold=True)
+    )
     if mode == PermissionMode.DANGEROUS:
-        typer.echo(typer.style(_DANGEROUS_WARNING, fg=typer.colors.RED, bold=True))
-    typer.echo(typer.style(f"jarvis [{mode.value}] · sandbox: {root}", dim=True))
+        typer.echo(typer.style("  " + _DANGEROUS_WARNING, fg=c.RED, bold=True))
+
+    status = [f"mode {mode.value}", f"dir {_short_path(root)}",
+              f"voice {engine_label}" if voice_on else "voice off"]
     if mic is not None and mic.enabled:
-        typer.echo(typer.style(f"{mic.mic_bar()}  ·  /talk to speak", dim=True))
-    typer.echo("Live chat. Type a message; /help for commands, /exit to quit.")
+        status.append(mic.mic_bar())
+    typer.echo(typer.style("  " + "   ·   ".join(status), dim=True))
+
+    hints = ["/help", "↑↓ history", "/exit"]
+    if mic is not None and mic.enabled:
+        hints.insert(1, "/talk to speak")
+    typer.echo(typer.style("  " + "   ·   ".join(hints), dim=True))
     typer.echo("")
 
 
@@ -198,7 +231,7 @@ async def chat_loop(
 
 
 def _you_prompt() -> str:
-    return typer.style("you › ", fg=typer.colors.CYAN, bold=True)
+    return colored_prompt("you ❯ ")
 
 
 def _handle_mode(runtime: AgentRuntime, message: str, echo: Callable[[str], None]) -> None:

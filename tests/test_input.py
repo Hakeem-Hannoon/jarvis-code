@@ -212,6 +212,14 @@ async def test_capture_degrades_when_no_mic_or_stt() -> None:
 # -- cloud STT is opt-in only -----------------------------------------------
 
 
+@pytest.mark.asyncio
+async def test_faster_whisper_empty_audio_returns_empty() -> None:
+    # Empty capture must not load a model or crash — just yields no transcript.
+    from jarvis_code.input import FasterWhisperSTT
+
+    assert await FasterWhisperSTT().transcribe(b"") == ""
+
+
 def test_cloud_stt_refused_without_opt_in() -> None:
     with pytest.raises(CloudSTTNotAllowed):
         build_stt_engine("cloud", allow_cloud=False)

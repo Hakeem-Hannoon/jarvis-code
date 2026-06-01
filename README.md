@@ -40,7 +40,8 @@ jarvis init --global          # per-user config, used from any directory
 Running `jarvis` with no task drops you into a **live chat**: a persistent
 conversation where each line is a turn and context carries across turns. In-chat
 commands: `/help`, `/talk` (push-to-talk), `/mode plan|auto|dangerous`,
-`/sandbox`, `/exit` (or Ctrl-D).
+`/sandbox`, `/exit` (or Ctrl-D). The prompt has full line editing — arrow keys,
+persistent ↑/↓ history, and Emacs shortcuts (Ctrl-A/E/K/U/W).
 
 **Voice output is on by default** (local macOS `say`, British "Daniel" voice for
 the JARVIS-style preset). Mute a run with `--voice false`, or force it on with

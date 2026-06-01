@@ -7,6 +7,7 @@ receive transient audio bytes and return text; they never persist audio.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from typing import Protocol, runtime_checkable
 
@@ -56,20 +57,40 @@ class FasterWhisperSTT:
     name = "faster-whisper"
     is_cloud = False
 
-    def __init__(self, model: str = "base") -> None:
+    def __init__(self, model: str = "base", *, language: str | None = "en") -> None:
         self.model = model
+        self.language = language
+        self._engine = None  # cached WhisperModel (loaded on first transcription)
 
     async def is_available(self) -> bool:
         return _have("faster_whisper")
 
-    async def transcribe(self, audio: bytes) -> str:  # pragma: no cover - needs model+audio
-        try:
-            import io
+    async def transcribe(self, audio: bytes) -> str:
+        if not audio:
+            return ""
+        # Model load + inference are CPU-bound; keep them off the event loop.
+        return await asyncio.to_thread(self._transcribe_sync, audio)
 
+    def _load_model(self):  # pragma: no cover - downloads/loads a model on first use
+        if self._engine is None:
             from faster_whisper import WhisperModel  # type: ignore
 
-            model = WhisperModel(self.model)
-            segments, _ = model.transcribe(io.BytesIO(audio))
+            # int8 on CPU: broad compatibility (incl. Apple Silicon), small + fast.
+            self._engine = WhisperModel(self.model, device="cpu", compute_type="int8")
+        return self._engine
+
+    def _transcribe_sync(self, audio: bytes) -> str:  # pragma: no cover - needs model+audio
+        try:
+            import numpy as np  # type: ignore
+
+            # faster-whisper expects float32 mono samples in [-1, 1], NOT an
+            # encoded file. The mic gives raw 16 kHz int16 PCM, so convert
+            # directly — no WAV/ffmpeg round-trip (which is what silently failed
+            # before).
+            samples = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
+            segments, _ = self._load_model().transcribe(
+                samples, language=self.language, beam_size=1
+            )
             return " ".join(seg.text for seg in segments).strip()
         except Exception as exc:
             _log.warning("faster-whisper failed (%s); no transcript", exc)

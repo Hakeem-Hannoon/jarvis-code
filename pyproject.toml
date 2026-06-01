@@ -37,11 +37,16 @@ voice = [
     "pyttsx3>=2.90",
     "sounddevice>=0.4",
 ]
-# Local, offline speech-to-text + voice-activity-detection. Never required.
+# Local, offline speech-to-text for `/talk`. Never required. faster-whisper +
+# sounddevice install cleanly on current Python; this is the supported path.
 stt = [
     "faster-whisper>=1.0",
-    "vosk>=0.3",
     "sounddevice>=0.4",
+]
+# Alternative offline STT engine (Vosk) + voice-activity-detection. Optional and
+# heavier; its wheels lag new Python releases, so it is kept out of [stt].
+stt-vosk = [
+    "vosk>=0.3",
     "webrtcvad>=2.0",
 ]
 # Developer tooling.

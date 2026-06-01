@@ -10,6 +10,32 @@ voice I/O. Installs a command called **`jarvis`**.
 
 ---
 
+## Honest limitations (vs. Claude Code)
+
+This is a focused, open, hackable agent — not a replacement for a mature product.
+Know the trade-offs going in:
+
+- **Context compaction is prompt-only.** When the conversation gets long, jarvis
+  asks the model to *summarize* older turns. That's simple and transparent, but
+  lossier and less precise than purpose-built context management — long sessions
+  can drift or forget detail.
+- **No native model "reasoning" control.** `--effort` is approximated with token
+  budget + prompting (so it works on every provider); it does **not** drive a
+  model's native thinking budget.
+- **Shell isn't OS-sandboxed.** Commands are cwd-confined and screened for
+  catastrophic patterns, but a shell can still *read* outside the root via
+  absolute paths. True isolation (containers/seccomp) is a documented deferral —
+  see `docs/security.md`.
+- **Text-based code understanding.** Search is grep/text — no language server,
+  semantic index, or symbol-aware navigation.
+- **Fewer integrations, younger code.** No MCP, no IDE plugins, a small tool set,
+  and far less real-world mileage than Claude Code.
+
+What you *do* get: strict sandboxing, multi-provider support, local/offline voice
+in and out, and a small codebase you can read and modify in an afternoon.
+
+---
+
 ## Install
 
 **One command** — clone, install everything, and put `jarvis` on your PATH:
@@ -72,6 +98,30 @@ jarvis --mode plan "explain how auth works in this project"
 
 The agent runs with **no step limit** by default, so it works a task through to
 completion — interrupt anytime with Ctrl-C.
+
+---
+
+## Effort
+
+Control how hard the agent works with `--effort` (or `[agent] effort` in config;
+default `medium`):
+
+| Level    | Behavior |
+|----------|----------|
+| `low`    | Quick and minimal — smallest change that works; step-capped. |
+| `medium` | Balanced (the default); unlimited steps. |
+| `high`   | Thorough — reasons about edge cases and verifies (e.g. runs tests). |
+| `madmax` | Maximum rigor — **unlocks sub-agents**, unlimited steps, larger responses. |
+
+```bash
+jarvis --effort high "refactor the parser and add tests"
+jarvis --effort madmax "find and fix the flaky test"   # prints a heads-up first
+```
+
+Effort tunes the step ceiling, the response token budget, whether the model may
+spawn **sub-agents** (madmax only), and a reasoning nudge in the system prompt.
+`madmax` is slower and uses more tokens, so it prints a short heads-up. (It does
+not switch to a different model.)
 
 ---
 
@@ -215,6 +265,7 @@ Output and input are independent — enable either alone.
 jarvis                                start an interactive chat session (REPL)
 jarvis "<task>"                       run the agent on a single task, then exit
 jarvis --mode plan|auto|dangerous     select permission mode (default: auto)
+jarvis --effort low|medium|high|madmax  how hard to work (default: medium)
 jarvis --voice true|false             voice output on/off for this run (default: on)
 jarvis --sandbox <path>               set the sandbox root
 jarvis --provider <p> --model <m>     override provider/model
@@ -227,12 +278,13 @@ jarvis --help | --version
 
 ---
 
-## Sub-agents
+## Sub-agents (madmax only)
 
-The agent can spawn focused sub-agents — **explorer, planner, debugger,
-reviewer, implementer, verifier** — each in its own context window. A sub-agent
-inherits the same sandbox and a permission mode clamped to never exceed the
-parent's, and returns a concise summary (not its transcript).
+At **`--effort madmax`**, the agent can spawn focused sub-agents — **explorer,
+planner, debugger, reviewer, implementer, verifier** — each in its own context
+window. A sub-agent inherits the same sandbox and a permission mode clamped to
+never exceed the parent's, and returns a concise summary (not its transcript).
+At lower effort the `spawn_subagent` tool isn't offered to the model.
 
 ---
 

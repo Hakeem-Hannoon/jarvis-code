@@ -11,7 +11,7 @@ from jarvis_code.utils.logging import get_logger
 from .engine import VoiceEngine
 from .noop import NoopVoiceEngine
 from .piper import PiperVoiceEngine
-from .system import SystemVoiceEngine
+from .system import SystemVoiceEngine, system_tts_available
 
 _log = get_logger("voice")
 
@@ -28,7 +28,8 @@ def engine_available(name: VoiceEngineName, voice: VoiceConfig) -> bool:
     if name == VoiceEngineName.NOOP:
         return True
     if name == VoiceEngineName.SYSTEM:
-        return _have("pyttsx3")
+        # macOS `say` (no install needed) OR pyttsx3 elsewhere.
+        return system_tts_available()
     if name == VoiceEngineName.PIPER:
         return (
             _have("piper")

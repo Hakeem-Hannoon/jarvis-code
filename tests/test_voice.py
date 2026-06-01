@@ -9,12 +9,15 @@ from jarvis_code.utils import logging as jlog
 from jarvis_code.voice import (
     NoopVoiceEngine,
     SpeakOptions,
+    SystemVoiceEngine,
     VoiceReporter,
     VoiceSubsystem,
     engine_available,
+    say_argv,
     select_engine,
 )
 from jarvis_code.voice import messages as vmsg
+from jarvis_code.voice import system as vsystem
 
 
 @pytest.fixture(autouse=True)
@@ -101,6 +104,77 @@ def test_select_falls_back_to_noop_when_nothing_installed() -> None:
 def test_select_noop_when_configured() -> None:
     engine = select_engine(_voice(VoiceEngineName.NOOP, VoiceEngineName.NOOP))
     assert isinstance(engine, NoopVoiceEngine)
+
+
+# -- system engine: macOS `say` backend -------------------------------------
+
+
+def test_say_argv_scales_rate_and_sets_volume() -> None:
+    argv = say_argv("Reading a file.", SpeakOptions(rate=2.0, volume=0.5), say_bin="say")
+    assert argv[0] == "say"
+    assert argv[1:3] == ["-r", "350"]  # 175 wpm * 2.0
+    # The spoken text is one argument carrying an inline (un-spoken) volume cmd.
+    assert argv[-1] == "[[volm 0.50]] Reading a file."
+
+
+def test_system_available_when_say_present(monkeypatch) -> None:
+    monkeypatch.setattr(vsystem, "_say_path", lambda: "/usr/bin/say")
+    monkeypatch.setattr(vsystem, "_pyttsx3_available", lambda: False)
+    assert vsystem.system_tts_available() is True
+    assert engine_available(VoiceEngineName.SYSTEM, VoiceConfig()) is True
+
+
+def test_system_unavailable_when_no_backend(monkeypatch) -> None:
+    monkeypatch.setattr(vsystem, "_say_path", lambda: None)
+    monkeypatch.setattr(vsystem, "_pyttsx3_available", lambda: False)
+    assert vsystem.system_tts_available() is False
+    assert engine_available(VoiceEngineName.SYSTEM, VoiceConfig()) is False
+
+
+@pytest.mark.asyncio
+async def test_speak_invokes_say_subprocess(monkeypatch) -> None:
+    monkeypatch.setattr(vsystem, "_say_path", lambda: "/usr/bin/say")
+    calls: list[list[str]] = []
+
+    class _FakeProc:
+        returncode = 0
+
+        async def wait(self) -> int:
+            return 0
+
+        def terminate(self) -> None:  # pragma: no cover - not hit here
+            pass
+
+    async def _fake_exec(*argv, **kwargs):
+        calls.append(list(argv))
+        return _FakeProc()
+
+    monkeypatch.setattr(vsystem.asyncio, "create_subprocess_exec", _fake_exec)
+    engine = SystemVoiceEngine()
+    await engine.speak("Running a command.", SpeakOptions())
+    assert calls and calls[0][0] == "/usr/bin/say"
+    assert calls[0][-1].endswith("Running a command.")
+
+
+@pytest.mark.asyncio
+async def test_stop_terminates_running_say(monkeypatch) -> None:
+    monkeypatch.setattr(vsystem, "_say_path", lambda: "/usr/bin/say")
+    terminated = {"called": False}
+
+    class _FakeProc:
+        returncode = None
+
+        async def wait(self) -> int:  # pragma: no cover - not awaited in this test
+            return 0
+
+        def terminate(self) -> None:
+            terminated["called"] = True
+            self.returncode = -15
+
+    engine = SystemVoiceEngine()
+    engine._proc = _FakeProc()  # simulate an in-progress utterance
+    await engine.stop()
+    assert terminated["called"] is True
 
 
 # -- queue: speak, drain, cancel --------------------------------------------

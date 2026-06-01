@@ -8,7 +8,7 @@ from .noop import NoopVoiceEngine
 from .piper import PiperVoiceEngine
 from .queue import VoiceSubsystem
 from .reporter import VoiceReporter
-from .system import SystemVoiceEngine
+from .system import SystemVoiceEngine, say_argv, system_tts_available
 
 __all__ = [
     "SpeakOptions",
@@ -18,6 +18,8 @@ __all__ = [
     "NoopVoiceEngine",
     "PiperVoiceEngine",
     "SystemVoiceEngine",
+    "say_argv",
+    "system_tts_available",
     "VoiceSubsystem",
     "VoiceReporter",
 ]

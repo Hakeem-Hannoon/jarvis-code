@@ -103,9 +103,13 @@ def collect_checks(opts: GlobalOptions) -> list[Check]:
             checks.append(
                 Check("Piper TTS", _have("piper"), "ok" if _have("piper") else "pip install '.[voice]'")
             )
-        checks.append(
-            Check("system TTS (pyttsx3)", _have("pyttsx3"), "ok" if _have("pyttsx3") else "optional")
-        )
+        from jarvis_code.voice import system_tts_available
+
+        if sys.platform == "darwin":
+            sys_detail = "ok — using macOS 'say'" if shutil.which("say") else "say binary missing"
+        else:
+            sys_detail = "ok (pyttsx3)" if _have("pyttsx3") else "optional — pip install '.[voice]'"
+        checks.append(Check("system TTS", system_tts_available(), sys_detail))
 
         if voice.input.enabled:
             stt_mod = "faster_whisper" if voice.input.stt_engine == SttEngineName.FASTER_WHISPER else "vosk"

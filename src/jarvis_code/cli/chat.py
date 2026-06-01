@@ -17,7 +17,7 @@ import typer
 
 from jarvis_code.agent import AgentRuntime, assemble_runtime
 from jarvis_code.agent.loop import RunStatus
-from jarvis_code.config import ConfigError, MissingAPIKeyError, load_config
+from jarvis_code.config import ConfigError, Effort, MissingAPIKeyError, load_config
 from jarvis_code.input import MicController, build_mic_controller
 from jarvis_code.models import ProviderError
 from jarvis_code.permissions import PermissionMode, TerminalPrompter
@@ -26,6 +26,7 @@ from jarvis_code.voice import VoiceReporter, VoiceSubsystem, select_engine
 
 from .lineedit import colored_prompt, save_history, setup_line_editing
 from .options import GlobalOptions
+from .run import _MADMAX_HEADSUP, resolve_effort
 from .ui import CompositeReporter, ConsoleReporter
 
 _EXIT = {"/exit", "/quit", "exit", "quit", ":q"}
@@ -65,6 +66,7 @@ def run_chat(opts: GlobalOptions) -> int:
 
     mic = build_mic_controller(config.voice.input)
     voice_on = config.voice.enabled if opts.voice is None else opts.voice
+    effort = resolve_effort(opts, config)
 
     async def _go() -> int:
         reporter = ConsoleReporter()
@@ -84,13 +86,16 @@ def run_chat(opts: GlobalOptions) -> int:
                 provider=None,
                 prompter=TerminalPrompter(),
                 reporter=reporter,
+                effort=effort,
             )
         except MissingAPIKeyError as exc:
             typer.echo(str(exc), err=True)
             return 1
 
         setup_line_editing()
-        _print_banner(opts.mode, root, mic, voice_on=voice_on, engine_label=engine_label)
+        if effort == Effort.MADMAX:
+            typer.echo(typer.style(_MADMAX_HEADSUP, fg=typer.colors.YELLOW, bold=True))
+        _print_banner(opts.mode, root, mic, voice_on=voice_on, engine_label=engine_label, effort=effort)
         try:
             await chat_loop(runtime, prompt_fn=_read_line, echo=typer.echo, mic=mic)
         finally:
@@ -123,6 +128,7 @@ def _print_banner(
     *,
     voice_on: bool = False,
     engine_label: str = "off",
+    effort: Effort = Effort.MEDIUM,
 ) -> None:
     c = typer.colors
     typer.echo(
@@ -132,7 +138,7 @@ def _print_banner(
     if mode == PermissionMode.DANGEROUS:
         typer.echo(typer.style("  " + _DANGEROUS_WARNING, fg=c.RED, bold=True))
 
-    status = [f"mode {mode.value}", f"dir {_short_path(root)}",
+    status = [f"mode {mode.value}", f"effort {effort.value}", f"dir {_short_path(root)}",
               f"voice {engine_label}" if voice_on else "voice off"]
     if mic is not None and mic.enabled:
         status.append(mic.mic_bar())

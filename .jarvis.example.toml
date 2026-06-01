@@ -41,6 +41,14 @@ endpoint = "https://your-resource.openai.azure.com"
 api_version = "2024-06-01"
 
 # ---------------------------------------------------------------------------
+# Agent behavior.
+# ---------------------------------------------------------------------------
+[agent]
+# low | medium | high | madmax  (override per run with --effort).
+# madmax = unlimited steps + sub-agents + max rigor (slower, costs more).
+effort = "medium"
+
+# ---------------------------------------------------------------------------
 # Voice output (local/offline by default). All of this is optional.
 # ---------------------------------------------------------------------------
 [voice]

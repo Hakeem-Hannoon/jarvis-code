@@ -279,3 +279,52 @@ async def test_max_steps_can_still_be_capped(fixture_repo: Sandbox) -> None:
     result = await runtime.run("loop forever")
     assert result.status == RunStatus.MAX_STEPS
     assert result.steps == 3
+
+
+# -- effort levels ----------------------------------------------------------
+
+
+def test_effort_profiles() -> None:
+    from jarvis_code.agent.effort import profile_for
+    from jarvis_code.config import Effort
+
+    # Sub-agents only at madmax.
+    assert profile_for(Effort.MADMAX).use_subagents is True
+    assert all(not profile_for(e).use_subagents for e in (Effort.LOW, Effort.MEDIUM, Effort.HIGH))
+    # low caps steps; medium (the default) keeps them unlimited.
+    assert profile_for(Effort.LOW).max_steps == 15
+    assert profile_for(Effort.MEDIUM).max_steps is None
+
+
+def test_build_system_prompt_includes_effort_note() -> None:
+    from jarvis_code.agent.prompts import build_system_prompt
+
+    prompt = build_system_prompt(
+        mode=PermissionMode.AUTO, sandbox_root="/x", tool_specs=[], memory=None,
+        effort_note="EFFORT high: be thorough.",
+    )
+    assert "EFFORT high: be thorough." in prompt
+
+
+@pytest.mark.asyncio
+async def test_madmax_exposes_subagents_and_unlimited_steps(fixture_repo: Sandbox) -> None:
+    from jarvis_code.config import Effort
+
+    rt = assemble_runtime(
+        config=_config(), sandbox=fixture_repo, mode=PermissionMode.PLAN,
+        provider=FakeProvider([ModelResponse(text="ok")]), effort=Effort.MADMAX,
+    )
+    assert "spawn_subagent" in rt.executor.registry
+    assert rt.max_steps is None  # unlimited
+
+
+@pytest.mark.asyncio
+async def test_low_effort_caps_steps_and_hides_subagents(fixture_repo: Sandbox) -> None:
+    from jarvis_code.config import Effort
+
+    rt = assemble_runtime(
+        config=_config(), sandbox=fixture_repo, mode=PermissionMode.PLAN,
+        provider=FakeProvider([ModelResponse(text="ok")]), effort=Effort.LOW,
+    )
+    assert "spawn_subagent" not in rt.executor.registry
+    assert rt.max_steps == 15

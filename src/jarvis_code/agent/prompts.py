@@ -44,6 +44,7 @@ def build_system_prompt(
     tool_specs: list[dict],
     memory: str | None,
     role: str | None = None,
+    effort_note: str | None = None,
 ) -> str:
     tool_lines = "\n".join(f"  - {t['name']}: {t['description']}" for t in tool_specs)
     identity = role or "You are jarvis, a careful, local, sandboxed coding agent."
@@ -51,6 +52,10 @@ def build_system_prompt(
         identity,
         _SAFETY_RULES,
         _MODE_GUIDANCE[mode],
+    ]
+    if effort_note:
+        sections.append(effort_note)
+    sections += [
         f"SANDBOX ROOT: {sandbox_root}\nAll paths are relative to this root.",
         "TOOLS available to you (call them; do not pretend):\n" + tool_lines,
         "Reading files: use read_file. For large files it paginates — pass "

@@ -41,6 +41,11 @@ def run(registry, ctx, name, **args):
 # -- registry ---------------------------------------------------------------
 
 
+def test_registry_gates_subagents() -> None:
+    assert "spawn_subagent" in build_default_registry()  # default: available
+    assert "spawn_subagent" not in build_default_registry(include_subagents=False)
+
+
 def test_registry_has_full_tool_set(registry) -> None:
     expected = {
         "list_files", "read_file", "write_file", "edit_file", "delete_file",

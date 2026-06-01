@@ -29,6 +29,15 @@ class SttEngineName(str, Enum):
     VOSK = "vosk"
 
 
+class Effort(str, Enum):
+    """How hard the agent works. ``madmax`` unlocks sub-agents (see effort.py)."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    MADMAX = "madmax"
+
+
 _STRICT = ConfigDict(extra="forbid")
 
 
@@ -106,12 +115,20 @@ class VoiceConfig(BaseModel):
     input: VoiceInputConfig = Field(default_factory=VoiceInputConfig)
 
 
+class AgentConfig(BaseModel):
+    model_config = _STRICT
+
+    # How hard the agent works by default; overridable per run with --effort.
+    effort: Effort = Effort.MEDIUM
+
+
 class JarvisConfig(BaseModel):
     model_config = _STRICT
 
     default_provider: str = "anthropic"
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
 
     @model_validator(mode="after")
     def _default_provider_exists(self) -> "JarvisConfig":

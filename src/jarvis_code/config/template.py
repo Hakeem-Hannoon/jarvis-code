@@ -46,6 +46,14 @@ api_version = "2024-06-01"
 # Force with "azure_openai" | "foundry" | "openai_v1" if auto-detection is wrong.
 # endpoint_style = "openai_v1"
 
+[agent]
+# How hard the agent works (override per run with --effort):
+#   low    — quick & minimal, capped steps
+#   medium — balanced (default)
+#   high   — thorough; reasons about edge cases and verifies
+#   madmax — maximum rigor; unlimited steps + sub-agents (slower, costs more)
+effort = "medium"
+
 [voice]
 enabled = true                  # voice output on by default; --voice false to mute
 engine = "system"               # piper | system | noop (system = macOS `say`)

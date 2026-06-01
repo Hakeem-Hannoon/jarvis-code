@@ -14,7 +14,7 @@ import itertools
 from dataclasses import dataclass
 from enum import Enum
 
-from jarvis_code.config import JarvisConfig
+from jarvis_code.config import Effort, JarvisConfig
 from jarvis_code.events import EventBus, EventType, InstructionKind, InstructionQueue
 from jarvis_code.models import ProviderError, build_provider
 from jarvis_code.permissions import OutcomeKind, PermissionManager, PermissionMode
@@ -24,6 +24,7 @@ from jarvis_code.tools import ToolContext, ToolExecutor, build_default_registry
 from jarvis_code.utils.logging import get_logger
 
 from .context import ConversationContext
+from .effort import profile_for
 from .memory import load_project_memory
 from .prompts import build_system_prompt
 from .reporter import NoopReporter, Reporter
@@ -228,6 +229,9 @@ class AgentRuntime:
             self.session.steering(revise_feedback)
 
 
+_UNSET_STEPS = object()  # sentinel: caller didn't pass max_steps (use the effort profile)
+
+
 def assemble_runtime(
     *,
     config: JarvisConfig,
@@ -240,15 +244,24 @@ def assemble_runtime(
     reporter: Reporter | None = None,
     instructions: InstructionQueue | None = None,
     bus: EventBus | None = None,
-    max_steps: int | None = None,
+    effort: Effort = Effort.MEDIUM,
+    max_steps: object = _UNSET_STEPS,
 ) -> AgentRuntime:
-    """Wire up a runtime. ``provider`` may be injected (tests); else built from config."""
+    """Wire up a runtime. ``provider`` may be injected (tests); else built from config.
+
+    ``effort`` tunes step ceiling, response token budget, sub-agent availability,
+    and a system-prompt reasoning nudge. An explicit ``max_steps`` overrides the
+    effort profile's ceiling.
+    """
+    profile = profile_for(effort)
+    steps = profile.max_steps if max_steps is _UNSET_STEPS else max_steps  # type: ignore[assignment]
+
     bus = bus if bus is not None else EventBus()
     instructions = instructions if instructions is not None else InstructionQueue(bus)
-    registry = build_default_registry()
+    registry = build_default_registry(include_subagents=profile.use_subagents)
     permissions = PermissionManager(mode, prompter=prompter)
     if provider is None:
-        provider = build_provider(config, http_client=http_client)
+        provider = build_provider(config, http_client=http_client, max_tokens=profile.max_tokens)
     if session is None:
         session = SessionWriter(sandbox)
 
@@ -258,6 +271,7 @@ def assemble_runtime(
         sandbox_root=str(sandbox.root),
         tool_specs=registry.specs(),
         memory=memory,
+        effort_note=profile.guidance,
     )
     context = ConversationContext(system_prompt)
     state = RunState()
@@ -282,7 +296,7 @@ def assemble_runtime(
         context=context,
         session=session,
         state=state,
-        max_steps=max_steps,
+        max_steps=steps,  # type: ignore[arg-type]
         reporter=reporter,
         instructions=instructions,
         bus=bus,

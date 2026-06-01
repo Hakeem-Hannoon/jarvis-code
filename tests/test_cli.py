@@ -65,6 +65,20 @@ def test_inject_accounts_for_value_options() -> None:
         "--voice", "false", "run", "explain",
     ]
     assert inject_default_command(["--voice", "true", "doctor"]) == ["--voice", "true", "doctor"]
+    # --effort also takes a value
+    assert inject_default_command(["--effort", "madmax", "explain"]) == [
+        "--effort", "madmax", "run", "explain",
+    ]
+
+
+def test_resolve_effort_cli_overrides_config() -> None:
+    from jarvis_code.cli.options import GlobalOptions
+    from jarvis_code.cli.run import resolve_effort
+    from jarvis_code.config import AgentConfig, Effort, JarvisConfig
+
+    cfg = JarvisConfig(agent=AgentConfig(effort=Effort.LOW))
+    assert resolve_effort(GlobalOptions(), cfg) == Effort.LOW            # from config
+    assert resolve_effort(GlobalOptions(effort=Effort.MADMAX), cfg) == Effort.MADMAX  # CLI wins
 
 
 # -- --voice flag -----------------------------------------------------------

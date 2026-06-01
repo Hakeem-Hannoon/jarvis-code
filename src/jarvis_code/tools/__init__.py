@@ -36,10 +36,16 @@ _DEFAULT_TOOLS = [
 ]
 
 
-def build_default_registry() -> ToolRegistry:
-    """Construct a registry with the full documented tool set registered."""
+def build_default_registry(*, include_subagents: bool = True) -> ToolRegistry:
+    """Construct a registry with the documented tool set.
+
+    ``include_subagents=False`` omits spawn_subagent so the model can't delegate
+    (sub-agents are unlocked only at ``madmax`` effort).
+    """
     registry = ToolRegistry()
     for tool_cls in _DEFAULT_TOOLS:
+        if tool_cls is SpawnSubagentTool and not include_subagents:
+            continue
         registry.register(tool_cls())
     return registry
 

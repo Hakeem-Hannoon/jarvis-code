@@ -9,7 +9,7 @@ import typer
 
 from jarvis_code.agent import assemble_runtime
 from jarvis_code.agent.loop import RunStatus
-from jarvis_code.config import ConfigError, MissingAPIKeyError, load_config
+from jarvis_code.config import ConfigError, Effort, MissingAPIKeyError, load_config
 from jarvis_code.permissions import PermissionMode, TerminalPrompter
 from jarvis_code.sandbox import Sandbox, SandboxRootError, resolve_sandbox_root
 from jarvis_code.voice import VoiceReporter, VoiceSubsystem, select_engine
@@ -21,6 +21,16 @@ _DANGEROUS_WARNING = (
     "⚠  DANGEROUS MODE: writes, edits, deletes, and shell commands run without "
     "per-action approval. Everything is still confined to the sandbox root."
 )
+
+_MADMAX_HEADSUP = (
+    "⚠  madmax effort: unlimited steps, sub-agents enabled, larger responses — "
+    "slower and more token-hungry (bigger bills). Ctrl-C to stop anytime."
+)
+
+
+def resolve_effort(opts: GlobalOptions, config) -> Effort:
+    """CLI --effort overrides the config's [agent] effort."""
+    return opts.effort or config.agent.effort
 
 
 def run_task(opts: GlobalOptions, task: str) -> int:
@@ -38,10 +48,16 @@ def run_task(opts: GlobalOptions, task: str) -> int:
         typer.echo(str(exc), err=True)
         return 1
 
+    effort = resolve_effort(opts, config)
+
     if opts.mode == PermissionMode.DANGEROUS:
         typer.echo(typer.style(_DANGEROUS_WARNING, fg=typer.colors.RED, bold=True))
+    if effort == Effort.MADMAX:
+        typer.echo(typer.style(_MADMAX_HEADSUP, fg=typer.colors.YELLOW, bold=True))
 
-    typer.echo(typer.style(f"jarvis [{opts.mode.value}] · sandbox: {root}", dim=True))
+    typer.echo(
+        typer.style(f"jarvis [{opts.mode.value}] · effort {effort.value} · sandbox: {root}", dim=True)
+    )
     typer.echo("")
 
     voice_on = config.voice.enabled if opts.voice is None else opts.voice
@@ -60,6 +76,7 @@ def run_task(opts: GlobalOptions, task: str) -> int:
             provider=None,
             prompter=TerminalPrompter(),
             reporter=reporter,
+            effort=effort,
         )
         try:
             return await runtime.run(task)

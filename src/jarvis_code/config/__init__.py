@@ -18,6 +18,8 @@ from .loader import (
     validate_config_file,
 )
 from .schema import (
+    AgentConfig,
+    Effort,
     JarvisConfig,
     MicMode,
     ProviderConfig,
@@ -42,6 +44,8 @@ __all__ = [
     "load_config",
     "require_provider",
     "validate_config_file",
+    "AgentConfig",
+    "Effort",
     "JarvisConfig",
     "MicMode",
     "ProviderConfig",

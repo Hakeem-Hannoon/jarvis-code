@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from jarvis_code.config import Effort
 from jarvis_code.permissions import PermissionMode
 
 
@@ -15,6 +16,8 @@ class GlobalOptions:
     mode: PermissionMode = PermissionMode.AUTO
     # None = use the config value; True/False = override voice output for this run.
     voice: bool | None = None
+    # None = use the config value ([agent] effort); else override for this run.
+    effort: Effort | None = None
 
 
 def parse_mode(value: str) -> PermissionMode:

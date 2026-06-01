@@ -25,11 +25,13 @@ def build_provider(
     provider: str | None = None,
     model: str | None = None,
     http_client: httpx.Client | None = None,
+    max_tokens: int | None = None,
 ) -> ModelProvider:
     """Construct the selected provider.
 
     Selection precedence: ``provider`` flag, else ``config.default_provider``.
     Model precedence: ``model`` flag, else the provider's configured model.
+    ``max_tokens`` (from the effort profile) bounds the response when given.
     Raises ``MissingAPIKeyError`` (from the config layer) if the key is absent.
     """
     name, pconf = require_provider(config, provider)
@@ -46,6 +48,8 @@ def build_provider(
         "endpoint_style": pconf.endpoint_style,
         "http_client": http_client,
     }
+    if max_tokens is not None:
+        common["max_tokens"] = max_tokens
 
     if name == "anthropic":
         return AnthropicProvider(**common)

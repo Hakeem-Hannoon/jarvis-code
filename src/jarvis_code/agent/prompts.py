@@ -53,6 +53,9 @@ def build_system_prompt(
         _MODE_GUIDANCE[mode],
         f"SANDBOX ROOT: {sandbox_root}\nAll paths are relative to this root.",
         "TOOLS available to you (call them; do not pretend):\n" + tool_lines,
+        "Reading files: use read_file. For large files it paginates — pass "
+        "'offset'/'limit' to read more chunks. Do NOT use shell head/tail/sed/cat "
+        "to read files; read_file is sandboxed and needs no approval.",
         "When the task is complete, stop calling tools and give a concise final "
         "summary: what you found/changed, files touched, commands run, and any "
         "remaining risks or TODOs.",

@@ -39,11 +39,33 @@ class ListFilesTool(Tool):
         return ToolResult.success("\n".join(names), count=len(names))
 
 
+_DEFAULT_READ_LINES = 2000
+
+
 class ReadFileTool(Tool):
     name = "read_file"
-    description = "Read a UTF-8 text file inside the sandbox."
+    description = (
+        "Read a UTF-8 text file inside the sandbox. Large files are paginated by "
+        "line: pass 'offset' (1-based start line) and 'limit' to read further "
+        "chunks. Prefer this over shell head/tail — it is sandboxed and needs no "
+        "approval."
+    )
     capability = Capability.READ
-    parameters = _PATH_SCHEMA
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path relative to the sandbox root."},
+            "offset": {
+                "type": "integer",
+                "description": "1-based line number to start at (default 1).",
+            },
+            "limit": {
+                "type": "integer",
+                "description": f"Max lines to return (default {_DEFAULT_READ_LINES}).",
+            },
+        },
+        "required": ["path"],
+    }
 
     def run(self, ctx: ToolContext, args: dict) -> ToolResult:
         path = self._require(args, "path")
@@ -51,7 +73,39 @@ class ReadFileTool(Tool):
             content = ctx.sandbox.read(path)
         except (SandboxViolation, OSError, UnicodeDecodeError) as exc:
             return ToolResult.fail(str(exc))
-        return ToolResult.success(self._truncate(content, ctx), path=ctx.sandbox.relpath(path))
+
+        lines = content.splitlines()
+        total = len(lines)
+        offset = self._as_int(args.get("offset"), default=1, minimum=1)
+        limit = self._as_int(args.get("limit"), default=_DEFAULT_READ_LINES, minimum=1)
+        start = offset - 1
+        chunk = lines[start : start + limit]
+        body = "\n".join(chunk)
+        end = start + len(chunk)
+
+        # A continuation hint keeps the model paginating via this tool instead of
+        # falling back to shell head/tail (which needs approval and isn't sandboxed).
+        note = ""
+        if end < total:
+            note = (
+                f"\n\n... [showing lines {offset}–{end} of {total}. "
+                f"Call read_file with offset={end + 1} to continue.]"
+            )
+        elif offset > 1:
+            note = f"\n\n... [showing lines {offset}–{end} of {total} (end of file).]"
+
+        rel = ctx.sandbox.relpath(path)
+        return ToolResult.success(
+            self._truncate(body, ctx) + note, path=rel, lines=total, shown=(offset, end)
+        )
+
+    @staticmethod
+    def _as_int(value: object, *, default: int, minimum: int) -> int:
+        try:
+            n = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+        return max(minimum, n)
 
 
 class WriteFileTool(Tool):

@@ -74,6 +74,24 @@ def test_read_out_of_root_blocked(registry, ctx) -> None:
     assert not res.ok and res.error
 
 
+def test_read_file_paginates_large_file(registry, ctx, project: Path) -> None:
+    (project / "big.txt").write_text("\n".join(f"line{i}" for i in range(1, 5001)) + "\n")
+
+    # Default read returns the first chunk and a continuation hint (no shell tail).
+    res = run(registry, ctx, "read_file", path="big.txt")
+    assert res.ok
+    assert "line1" in res.output and "line2000" in res.output
+    assert "line2001" not in res.output
+    assert "offset=2001 to continue" in res.output
+    assert res.metadata["lines"] == 5000
+
+    # Continue from where it left off via the tool itself.
+    res2 = run(registry, ctx, "read_file", path="big.txt", offset=2001, limit=10)
+    assert res2.ok
+    assert "line2001" in res2.output and "line2010" in res2.output
+    assert "line2011" not in res2.output
+
+
 def test_write_and_edit(registry, ctx, project: Path) -> None:
     w = run(registry, ctx, "write_file", path="notes.txt", content="one\ntwo\n")
     assert w.ok and (project / "notes.txt").read_text() == "one\ntwo\n"

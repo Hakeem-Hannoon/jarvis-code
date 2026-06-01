@@ -9,7 +9,8 @@ session without leaving it.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import threading
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import typer
@@ -17,6 +18,7 @@ import typer
 from jarvis_code.agent import AgentRuntime, assemble_runtime
 from jarvis_code.agent.loop import RunStatus
 from jarvis_code.config import ConfigError, MissingAPIKeyError, load_config
+from jarvis_code.input import MicController, build_mic_controller
 from jarvis_code.models import ProviderError
 from jarvis_code.permissions import PermissionMode, TerminalPrompter
 from jarvis_code.sandbox import Sandbox, SandboxRootError, resolve_sandbox_root
@@ -26,10 +28,12 @@ from .options import GlobalOptions
 from .ui import CompositeReporter, ConsoleReporter
 
 _EXIT = {"/exit", "/quit", "exit", "quit", ":q"}
+_TALK = {"/talk", "/ptt"}
 
 _HELP = """\
 Commands:
   /help                 show this help
+  /talk (or /ptt)       push-to-talk: speak your next message, Enter to stop
   /mode plan|auto|dangerous   switch permission mode for the rest of the session
   /sandbox              show the current sandbox root
   /exit (or Ctrl-D)     leave the chat
@@ -56,6 +60,8 @@ def run_chat(opts: GlobalOptions) -> int:
         typer.echo(str(exc), err=True)
         return 1
 
+    mic = build_mic_controller(config.voice.input)
+
     async def _go() -> int:
         reporter = ConsoleReporter()
         voice_sub: VoiceSubsystem | None = None
@@ -76,9 +82,9 @@ def run_chat(opts: GlobalOptions) -> int:
             typer.echo(str(exc), err=True)
             return 1
 
-        _print_banner(opts.mode, root)
+        _print_banner(opts.mode, root, mic)
         try:
-            await chat_loop(runtime, prompt_fn=_read_line, echo=typer.echo)
+            await chat_loop(runtime, prompt_fn=_read_line, echo=typer.echo, mic=mic)
         finally:
             if voice_sub is not None:
                 await voice_sub.aclose()
@@ -95,12 +101,52 @@ def _read_line(prompt: str) -> str:
         raise EOFError from None
 
 
-def _print_banner(mode: PermissionMode, root: Path) -> None:
+def _print_banner(mode: PermissionMode, root: Path, mic: MicController | None = None) -> None:
     if mode == PermissionMode.DANGEROUS:
         typer.echo(typer.style(_DANGEROUS_WARNING, fg=typer.colors.RED, bold=True))
     typer.echo(typer.style(f"jarvis [{mode.value}] · sandbox: {root}", dim=True))
+    if mic is not None and mic.enabled:
+        typer.echo(typer.style(f"{mic.mic_bar()}  ·  /talk to speak", dim=True))
     typer.echo("Live chat. Type a message; /help for commands, /exit to quit.")
     typer.echo("")
+
+
+async def _wait_for_enter() -> None:
+    """Block (off the event loop) until the user presses Enter."""
+    await asyncio.to_thread(input, "")
+
+
+async def _capture_voice(
+    mic: MicController | None,
+    echo: Callable[[str], None],
+    wait_for_stop: Callable[[], Awaitable[None]],
+) -> str | None:
+    """Run one push-to-talk capture and return the transcript (or None).
+
+    Degrades with a clear, actionable message whenever voice input is off,
+    Muted, or the mic/STT backend is unavailable — never raises.
+    """
+    if mic is None:
+        echo(typer.style("Voice input isn't configured.", fg=typer.colors.YELLOW))
+        return None
+    reason = await mic.availability_reason()
+    if reason is not None:
+        echo(typer.style(reason, fg=typer.colors.YELLOW))
+        return None
+
+    echo(typer.style("🎙  Recording — press Enter to stop.", fg=typer.colors.MAGENTA))
+    stop = threading.Event()
+    task = asyncio.create_task(mic.record_ptt(stop=stop))
+    try:
+        await wait_for_stop()
+    finally:
+        stop.set()
+    text = ((await task) or "").strip()
+    if not text:
+        echo(typer.style("(heard nothing)", dim=True))
+        return None
+    echo(typer.style(f"you 🎙 › {text}", fg=typer.colors.CYAN, bold=True))
+    return text
 
 
 async def chat_loop(
@@ -108,8 +154,11 @@ async def chat_loop(
     *,
     prompt_fn: Callable[[str], str],
     echo: Callable[[str], None],
+    mic: MicController | None = None,
+    stop_waiter: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """The testable core loop. ``prompt_fn`` returns a line or raises EOFError."""
+    waiter = stop_waiter or _wait_for_enter
     while True:
         try:
             line = await asyncio.to_thread(prompt_fn, _you_prompt())
@@ -133,6 +182,11 @@ async def chat_loop(
         if message.startswith("/mode"):
             _handle_mode(runtime, message, echo)
             continue
+        if message in _TALK:
+            spoken = await _capture_voice(mic, echo, waiter)
+            if spoken is None:
+                continue
+            message = spoken  # fall through and run the transcribed message
 
         try:
             result = await runtime.run(message)

@@ -25,8 +25,9 @@ class SpyRecorder:
     async def is_available(self) -> bool:
         return self._available
 
-    async def record(self, max_seconds: float) -> bytes:
+    async def record(self, max_seconds: float, *, stop=None) -> bytes:
         self.record_calls += 1
+        self.last_stop = stop
         return b"\x00\x01" * 16  # dummy PCM; never persisted
 
     # convenience for raising if ever touched in muted mode
@@ -142,6 +143,60 @@ async def test_ptt_press_release_transcribes() -> None:
     await mc.ptt_press()
     text = await mc.ptt_release()
     assert text == "commit the change"
+
+
+# -- push-to-talk (record_ptt) ----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_ptt_returns_transcript_and_passes_stop() -> None:
+    import threading
+
+    recorder = SpyRecorder()
+    mc = MicController(_cfg(mode=MicMode.PUSH_TO_TALK), FakeSTT("fix the parser bug"), recorder)
+    stop = threading.Event()
+    text = await mc.record_ptt(stop=stop)
+    assert text == "fix the parser bug"
+    assert recorder.touched is True
+    assert recorder.last_stop is stop  # stop signal threaded through to capture
+
+
+@pytest.mark.asyncio
+async def test_record_ptt_muted_records_nothing() -> None:
+    recorder = SpyRecorder()
+    stt = FakeSTT()
+    mc = MicController(_cfg(mode=MicMode.MUTED), stt, recorder)
+    assert await mc.record_ptt() is None
+    assert recorder.touched is False
+    assert stt.seen_audio == []
+    assert mc.last_text is None
+
+
+@pytest.mark.asyncio
+async def test_availability_reason_messages() -> None:
+    # disabled
+    assert "enabled = true" in (
+        await MicController(_cfg(enabled=False), FakeSTT(), SpyRecorder()).availability_reason()
+    )
+    # muted
+    assert "Muted" in (
+        await MicController(_cfg(mode=MicMode.MUTED), FakeSTT(), SpyRecorder()).availability_reason()
+    )
+    # no mic
+    assert "microphone" in (
+        await MicController(
+            _cfg(mode=MicMode.PUSH_TO_TALK), FakeSTT(), SpyRecorder(available=False)
+        ).availability_reason()
+    ).lower()
+    # no STT
+    assert "speech-to-text" in (
+        await MicController(_cfg(mode=MicMode.PUSH_TO_TALK), NoopSTT(), SpyRecorder()).availability_reason()
+    )
+    # all good -> None
+    assert (
+        await MicController(_cfg(mode=MicMode.PUSH_TO_TALK), FakeSTT(), SpyRecorder()).availability_reason()
+        is None
+    )
 
 
 @pytest.mark.asyncio

@@ -158,6 +158,11 @@ unless you set `allow_cloud_stt = true`. The terminal shows the active mode:
 Mic: [Open Mic] [>Push to Talk<] [Muted]
 ```
 
+In an interactive session, type **`/talk`** to push-to-talk: speak your message,
+press **Enter** to stop, and the local transcript becomes your next turn. If
+voice input is off, Muted, or STT isn't installed, `/talk` says why and records
+nothing.
+
 Voice input and output are independent — you can enable one without the other.
 
 ---

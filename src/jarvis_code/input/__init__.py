@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .factory import select_stt
+from .factory import build_mic_controller, select_stt
 from .mic import (
     MicController,
     NullRecorder,
@@ -24,6 +24,7 @@ from .stt import (
 
 __all__ = [
     "select_stt",
+    "build_mic_controller",
     "MicController",
     "NullRecorder",
     "Recorder",

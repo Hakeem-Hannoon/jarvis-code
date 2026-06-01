@@ -89,6 +89,95 @@ async def test_chat_help_and_sandbox() -> None:
     assert rt.runs == []
 
 
+class FakeMic:
+    def __init__(self, transcript=None, reason=None) -> None:
+        self.enabled = True
+        self._transcript = transcript
+        self._reason = reason
+        self.recorded = False
+
+    async def availability_reason(self):
+        return self._reason
+
+    async def record_ptt(self, max_seconds: float = 30.0, *, stop=None):
+        self.recorded = True
+        if stop is not None:
+            stop.set()
+        return self._transcript
+
+    def mic_bar(self) -> str:
+        return "Mic: [>Push to Talk<]"
+
+
+async def _immediate_stop() -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_chat_talk_runs_transcribed_message() -> None:
+    out: list[str] = []
+    rt = FakeRuntime()
+    mic = FakeMic(transcript="run the tests please")
+    await chat_loop(
+        rt,
+        prompt_fn=_prompt_from(["/talk", "/exit"]),
+        echo=out.append,
+        mic=mic,
+        stop_waiter=_immediate_stop,
+    )
+    assert mic.recorded is True
+    assert rt.runs == ["run the tests please"]  # the transcript became a turn
+    assert any("Recording" in o for o in out)
+
+
+@pytest.mark.asyncio
+async def test_chat_talk_reports_when_unavailable() -> None:
+    out: list[str] = []
+    rt = FakeRuntime()
+    mic = FakeMic(reason="Voice input is off. In config set [voice.input] enabled = true")
+    await chat_loop(
+        rt,
+        prompt_fn=_prompt_from(["/talk", "/exit"]),
+        echo=out.append,
+        mic=mic,
+        stop_waiter=_immediate_stop,
+    )
+    assert mic.recorded is False
+    assert rt.runs == []  # nothing was sent
+    assert any("Voice input is off" in o for o in out)
+
+
+@pytest.mark.asyncio
+async def test_chat_talk_heard_nothing() -> None:
+    out: list[str] = []
+    rt = FakeRuntime()
+    mic = FakeMic(transcript="   ")  # available, but empty transcript
+    await chat_loop(
+        rt,
+        prompt_fn=_prompt_from(["/talk", "/exit"]),
+        echo=out.append,
+        mic=mic,
+        stop_waiter=_immediate_stop,
+    )
+    assert rt.runs == []
+    assert any("heard nothing" in o for o in out)
+
+
+@pytest.mark.asyncio
+async def test_chat_talk_without_mic_configured() -> None:
+    out: list[str] = []
+    rt = FakeRuntime()
+    await chat_loop(
+        rt,
+        prompt_fn=_prompt_from(["/talk", "/exit"]),
+        echo=out.append,
+        mic=None,
+        stop_waiter=_immediate_stop,
+    )
+    assert rt.runs == []
+    assert any("isn't configured" in o for o in out)
+
+
 @pytest.mark.asyncio
 async def test_chat_handles_provider_error_and_continues() -> None:
     out: list[str] = []

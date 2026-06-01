@@ -14,6 +14,7 @@ Invariants enforced here:
 from __future__ import annotations
 
 import importlib.util
+import threading
 from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
@@ -29,14 +30,18 @@ _CYCLE = [MicMode.OPEN_MIC, MicMode.PUSH_TO_TALK, MicMode.MUTED]
 
 @runtime_checkable
 class Recorder(Protocol):
-    async def record(self, max_seconds: float) -> bytes: ...
+    async def record(
+        self, max_seconds: float, *, stop: "threading.Event | None" = None
+    ) -> bytes: ...
     async def is_available(self) -> bool: ...
 
 
 class NullRecorder:
     """A recorder that captures nothing (no audio hardware / not installed)."""
 
-    async def record(self, max_seconds: float) -> bytes:
+    async def record(
+        self, max_seconds: float, *, stop: "threading.Event | None" = None
+    ) -> bytes:
         return b""
 
     async def is_available(self) -> bool:
@@ -44,7 +49,11 @@ class NullRecorder:
 
 
 class SoundDeviceRecorder:  # pragma: no cover - needs a real microphone
-    """Records from the default input device via sounddevice."""
+    """Records from the default input device via sounddevice.
+
+    Capture ends at ``max_seconds`` or as soon as ``stop`` is set (push-to-talk:
+    the caller sets ``stop`` when the user releases / presses Enter).
+    """
 
     def __init__(self, samplerate: int = 16000) -> None:
         self.samplerate = samplerate
@@ -55,15 +64,26 @@ class SoundDeviceRecorder:  # pragma: no cover - needs a real microphone
         except (ImportError, ValueError):
             return False
 
-    async def record(self, max_seconds: float) -> bytes:
+    async def record(
+        self, max_seconds: float, *, stop: "threading.Event | None" = None
+    ) -> bytes:
         import asyncio
 
         def _rec() -> bytes:
             import sounddevice as sd  # type: ignore
 
-            frames = sd.rec(int(max_seconds * self.samplerate), samplerate=self.samplerate, channels=1, dtype="int16")
-            sd.wait()
-            return bytes(frames)
+            block = max(1, int(self.samplerate * 0.1))  # 100 ms chunks
+            remaining = int(max_seconds * self.samplerate)
+            chunks: list[bytes] = []
+            with sd.InputStream(samplerate=self.samplerate, channels=1, dtype="int16") as stream:
+                while remaining > 0:
+                    if stop is not None and stop.is_set():
+                        break
+                    n = min(block, remaining)
+                    data, _ = stream.read(n)
+                    chunks.append(bytes(data))
+                    remaining -= n
+            return b"".join(chunks)
 
         return await asyncio.to_thread(_rec)
 
@@ -154,6 +174,42 @@ class MicController:
             return None
         audio = await self.recorder.record(max_seconds)
         return await self._transcribe(audio)
+
+    async def record_ptt(
+        self, max_seconds: float = 30.0, *, stop: "threading.Event | None" = None
+    ) -> str | None:
+        """One explicit push-to-talk capture (the chat ``/talk`` command).
+
+        Records until ``stop`` is set or ``max_seconds`` elapses, then returns
+        the transcript (or None). Honors the same hard guarantees as
+        :meth:`capture`: in Muted (or disabled) the recorder is NEVER invoked
+        and None is returned — nothing is recorded, transcribed, or stored.
+        """
+        if not self.is_listening():
+            return None
+        if not await self.recorder.is_available() or not await self.stt.is_available():
+            return None
+        audio = await self.recorder.record(max_seconds, stop=stop)
+        return await self._transcribe(audio)
+
+    async def availability_reason(self) -> str | None:
+        """Why push-to-talk can't run right now, or None if it can.
+
+        A short, user-facing message. Checks are ordered so the most actionable
+        reason surfaces first; never raises.
+        """
+        if not self.enabled:
+            return (
+                "Voice input is off. In config set [voice.input] enabled = true "
+                'and mode = "push_to_talk", then: pip install \'.[stt]\'.'
+            )
+        if self.mode == MicMode.MUTED:
+            return 'Mic is Muted — nothing is recorded. Set [voice.input] mode = "push_to_talk".'
+        if not await self.recorder.is_available():
+            return "No microphone available. Install: pip install '.[stt]' and grant the OS mic permission."
+        if not await self.stt.is_available():
+            return "No local speech-to-text available. Install: pip install '.[stt]'."
+        return None
 
     async def _transcribe(self, audio: bytes) -> str | None:
         # `audio` is a transient local; it is never stored or returned.

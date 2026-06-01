@@ -64,12 +64,30 @@ class OpenAIStyleProvider(HTTPProvider):
         self._variant = variant
         super().__init__(**kwargs)
 
+    def _is_foundry(self) -> bool:
+        """True for Azure AI Foundry's model-inference endpoint shape.
+
+        Explicit ``endpoint_style`` wins; otherwise detect by host. Foundry uses
+        ``/models/chat/completions`` with the model in the body, whereas classic
+        Azure OpenAI uses ``/openai/deployments/<deployment>/chat/completions``.
+        """
+        if self.endpoint_style in ("foundry", "azure_foundry"):
+            return True
+        if self.endpoint_style in ("azure_openai", "openai"):
+            return False
+        return "services.ai.azure.com" in (self.endpoint or "").lower()
+
     def _url_and_headers(self) -> tuple[str, dict]:
         if self._variant == "azure":
             base = (self.endpoint or "").rstrip("/")
+            headers = {"api-key": self._api_key, "content-type": "application/json"}
+            if self._is_foundry():
+                version = self.api_version or "2024-05-01-preview"
+                # Model is carried in the request body, not the URL path.
+                return f"{base}/models/chat/completions?api-version={version}", headers
             version = self.api_version or "2024-06-01"
             url = f"{base}/openai/deployments/{self.model}/chat/completions?api-version={version}"
-            return url, {"api-key": self._api_key, "content-type": "application/json"}
+            return url, headers
         base = (self.endpoint or _DEFAULT_BASE[self._variant]).rstrip("/")
         return (
             f"{base}/chat/completions",

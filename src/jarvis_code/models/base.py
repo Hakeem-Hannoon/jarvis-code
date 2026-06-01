@@ -52,6 +52,7 @@ class HTTPProvider:
         api_version: str | None = None,
         project: str | None = None,
         location: str | None = None,
+        endpoint_style: str | None = None,
         http_client: httpx.Client | None = None,
         timeout: float = 120.0,
         max_tokens: int = 4096,
@@ -62,6 +63,7 @@ class HTTPProvider:
         self.api_version = api_version
         self.project = project
         self.location = location
+        self.endpoint_style = endpoint_style
         self.max_tokens = max_tokens
         self._client = http_client or httpx.Client(timeout=timeout)
 

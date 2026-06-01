@@ -43,6 +43,7 @@ def build_provider(
         "api_version": pconf.api_version,
         "project": pconf.project,
         "location": pconf.location,
+        "endpoint_style": pconf.endpoint_style,
         "http_client": http_client,
     }
 

@@ -242,6 +242,56 @@ def test_azure_url_uses_deployment_and_api_version() -> None:
     assert "api-version=2024-06-01" in url
 
 
+def test_azure_foundry_url_uses_models_route_with_model_in_body() -> None:
+    captured: list = []
+    config = JarvisConfig.model_validate(
+        {
+            "default_provider": "azure",
+            "providers": {
+                "azure": {
+                    "api_key": KEYS["azure"],
+                    "model": "gpt-4o",
+                    "endpoint": "https://my-res.services.ai.azure.com",
+                    "api_version": "2024-05-01-preview",
+                }
+            },
+        }
+    )
+    provider = build_provider(
+        config, provider="azure", http_client=mock_client(captured, {"choices": [{"message": {}}]})
+    )
+    provider.complete([Message.user("hi")])
+    url = str(captured[0].url)
+    # Foundry shape: /models/chat/completions, model carried in the body.
+    assert "/models/chat/completions" in url
+    assert "/openai/deployments/" not in url
+    assert json.loads(captured[0].content.decode())["model"] == "gpt-4o"
+    assert KEYS["azure"] in captured[0].headers.get("api-key", "")
+    assert KEYS["azure"] not in url
+
+
+def test_azure_endpoint_style_forces_foundry() -> None:
+    captured: list = []
+    config = JarvisConfig.model_validate(
+        {
+            "default_provider": "azure",
+            "providers": {
+                "azure": {
+                    "api_key": KEYS["azure"],
+                    "model": "my-deployment",
+                    "endpoint": "https://my-res.openai.azure.com",
+                    "endpoint_style": "foundry",
+                }
+            },
+        }
+    )
+    provider = build_provider(
+        config, provider="azure", http_client=mock_client(captured, {"choices": [{"message": {}}]})
+    )
+    provider.complete([Message.user("hi")])
+    assert "/models/chat/completions" in str(captured[0].url)
+
+
 def test_vertex_url_uses_project_and_location() -> None:
     captured: list = []
     provider = build_provider(

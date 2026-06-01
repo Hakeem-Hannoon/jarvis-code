@@ -43,6 +43,9 @@ class ProviderConfig(BaseModel):
     api_version: str | None = None
     project: str | None = None
     location: str | None = None
+    # Azure only: "azure_openai" | "foundry". Default None auto-detects by host
+    # (an *.services.ai.azure.com endpoint is treated as Azure AI Foundry).
+    endpoint_style: str | None = None
 
     @field_validator("api_key", mode="before")
     @classmethod

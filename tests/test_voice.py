@@ -269,6 +269,12 @@ def test_action_phrase_prefers_intent_then_falls_back() -> None:
         "Installing the deps"
     )
     assert vmsg.action_phrase("run_shell", "git status", intent=None) == "Executing the git command."
+    # file ops also speak the model's reasoning when present (not just the name)
+    assert vmsg.action_phrase("write_file", "config.toml", intent="Wiring up the config loader.") == (
+        "Wiring up the config loader"
+    )
+    # ...and fall back to the filename only when there is no reason
+    assert vmsg.action_phrase("write_file", "config.toml", intent=None) == "Writing config.toml."
 
 
 @pytest.mark.asyncio

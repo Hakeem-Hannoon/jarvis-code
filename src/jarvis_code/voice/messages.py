@@ -141,12 +141,11 @@ def clean_intent(text: str | None) -> str | None:
 def action_phrase(tool_name: str, summary: str | None, intent: str | None = None) -> str:
     """The line to speak for a tool.
 
-    File operations always name the file ("Writing config.toml.") — that is more
-    useful than a generic reason. For other tools, an opted-in ``intent`` (the
-    model's short reason) is spoken when present, else the specific phrase.
+    Prefer the model's short reason — what it's actually trying to build/figure
+    out ("Refactoring the parser to handle nested calls") — over a bare file
+    action. Fall back to the specific phrase (filename / program name) only when
+    no reason is available.
     """
-    if tool_name in FILE_TOOLS:
-        return specific_action_phrase(tool_name, summary)
     cleaned = clean_intent(intent)
     if cleaned:
         return cleaned

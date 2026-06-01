@@ -72,6 +72,53 @@ def permission_request_phrase(command: str | None) -> str:
     return shorten(f"I need permission to run {program} inside the sandbox.")
 
 
+def specific_action_phrase(tool_name: str, summary: str | None) -> str:
+    """A curated action phrase, made a bit more specific where it is SAFE.
+
+    For shell, the program name (first token only) is included — the same safe
+    subset spoken in :func:`permission_request_phrase`. Arguments are never
+    voiced. For everything else this is the plain curated phrase.
+    """
+    if tool_name == "run_shell":
+        tokens = (summary or "").strip().split()
+        if tokens:
+            return shorten(f"Running the {tokens[0]} command.")
+        return _CATALOG["running_command"]
+    return tool_status_phrase(tool_name) or "Working."
+
+
+def clean_intent(text: str | None) -> str | None:
+    """Reduce model lead-in text to one short spoken line (capped + redacted).
+
+    Used ONLY when ``voice.speak_intent`` is opted in. Returns None when nothing
+    speakable remains. This is the one place model-authored words may be voiced;
+    ``shorten`` still caps length and scrubs registered secrets as a safety net.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    # First sentence / first line only — keep it short and status-like.
+    first = stripped.splitlines()[0]
+    for sep in (". ", "! ", "? "):
+        if sep in first:
+            first = first.split(sep, 1)[0]
+            break
+    first = first.strip().rstrip(".!?").strip()
+    if not first:
+        return None
+    spoken = shorten(first, max_chars=140)
+    return spoken or None
+
+
+def action_phrase(tool_name: str, summary: str | None, intent: str | None = None) -> str:
+    """The line to speak for a tool. With an opted-in ``intent``, speak the
+    model's short reason; otherwise speak the curated/specific action phrase."""
+    cleaned = clean_intent(intent)
+    if cleaned:
+        return cleaned
+    return specific_action_phrase(tool_name, summary)
+
+
 def swarm_phrase(phrase: str) -> str:
     return shorten(phrase or "Launching the swarm.")
 

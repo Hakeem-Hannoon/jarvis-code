@@ -204,6 +204,86 @@ async def test_stop_clears_pending_and_stops_engine() -> None:
     assert vs._queue.empty()
 
 
+# -- descriptive narration: opt-in model-authored intent --------------------
+
+
+def test_clean_intent_first_sentence_capped_and_redacted() -> None:
+    jlog.register_secret("sk-intentleak-123")
+    out = vmsg.clean_intent("Running with sk-intentleak-123 now. Second sentence here.")
+    assert out is not None
+    assert "sk-intentleak-123" not in out
+    assert "Second sentence" not in out  # only the first sentence
+    assert vmsg.clean_intent("   ") is None
+    assert vmsg.clean_intent(None) is None
+    assert len(vmsg.clean_intent("word " * 100)) <= 141
+
+
+def test_specific_action_phrase_uses_program_name_for_shell() -> None:
+    assert vmsg.specific_action_phrase("run_shell", "git status -sb") == "Running the git command."
+    assert vmsg.specific_action_phrase("run_shell", "") == "Running a command."
+    # argument values are never voiced — only the program name
+    assert "status" not in vmsg.specific_action_phrase("run_shell", "git status -sb")
+    assert vmsg.specific_action_phrase("read_file", "/x/y") == "Reading a file."
+
+
+def test_action_phrase_prefers_intent_then_falls_back() -> None:
+    assert vmsg.action_phrase("run_shell", "pip install x", intent="Installing the deps.") == (
+        "Installing the deps"
+    )
+    assert vmsg.action_phrase("run_shell", "git status", intent=None) == "Running the git command."
+
+
+@pytest.mark.asyncio
+async def test_reporter_speaks_model_intent_once_when_opted_in() -> None:
+    engine = FakeEngine()
+    vs = VoiceSubsystem(engine, VoiceConfig(speak_intent=True))
+    await vs.start()
+    reporter = VoiceReporter(vs)
+
+    reporter.assistant_text("I'll install the project dependencies so the tests run.")
+    reporter.tool_started("run_shell", "pip install -e .")  # speaks the intent
+    reporter.tool_started("read_file", "/proj/x.py")  # no new intent -> curated
+    await vs.drain()
+    await vs.aclose()
+
+    assert engine.spoken[0] == "I'll install the project dependencies so the tests run"
+    assert engine.spoken[1] == "Reading a file."
+    # The raw command arguments were never voiced.
+    assert all("pip install -e ." not in s for s in engine.spoken)
+
+
+@pytest.mark.asyncio
+async def test_reporter_intent_off_by_default_stays_curated() -> None:
+    engine = FakeEngine()
+    vs = VoiceSubsystem(engine, VoiceConfig())  # speak_intent defaults False
+    await vs.start()
+    reporter = VoiceReporter(vs)
+
+    reporter.assistant_text("I'll read the config to understand the layout.")
+    reporter.tool_started("read_file", "/proj/config.toml")
+    await vs.drain()
+    await vs.aclose()
+
+    assert engine.spoken == ["Reading a file."]  # model text never spoken
+
+
+@pytest.mark.asyncio
+async def test_reporter_intent_redacts_secret() -> None:
+    secret = "sk-spokenintent-9876543210"
+    jlog.register_secret(secret)
+    engine = FakeEngine()
+    vs = VoiceSubsystem(engine, VoiceConfig(speak_intent=True))
+    await vs.start()
+    reporter = VoiceReporter(vs)
+
+    reporter.assistant_text(f"Calling the API with {secret} to deploy.")
+    reporter.tool_started("run_shell", "curl https://x")
+    await vs.drain()
+    await vs.aclose()
+
+    assert all(secret not in s for s in engine.spoken)
+
+
 # -- the privacy invariant: no file contents / secrets reach the engine -----
 
 

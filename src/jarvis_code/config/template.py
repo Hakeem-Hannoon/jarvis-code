@@ -57,6 +57,12 @@ speech_rate = 1.0
 volume = 0.9
 announce_subagents = true
 announce_permissions = true
+# speak_intent: when true, spoken status may include a short, model-written
+# reason (e.g. "Running a command to install dependencies"), capped and
+# secret-redacted. Default false speaks ONLY fixed curated phrases. Turning this
+# on relaxes the "curated-only" privacy rule: a reason could echo a path or
+# argument that isn't a registered secret, so it can't be guaranteed clean.
+speak_intent = false
 swarm_phrase = "Launching the swarm."
 
 [voice.output]

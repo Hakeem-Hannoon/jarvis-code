@@ -54,6 +54,9 @@ speech_rate = 1.0
 volume = 0.9
 announce_subagents = true
 announce_permissions = true
+# speak_intent: when true, spoken status may include a short, model-written
+# reason (capped + secret-redacted). Default false speaks only curated phrases.
+speak_intent = false
 swarm_phrase = "Launching the swarm."
 
 [voice.output]

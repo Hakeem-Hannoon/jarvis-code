@@ -95,6 +95,10 @@ class VoiceConfig(BaseModel):
     volume: float = Field(default=0.9, ge=0, le=1)
     announce_subagents: bool = True
     announce_permissions: bool = True
+    # Opt-in: when true, spoken status may include a one-line, model-authored
+    # reason (capped + secret-redacted). Default false keeps the strict
+    # "only curated strings are spoken" privacy invariant in force.
+    speak_intent: bool = False
     swarm_phrase: str = "Launching the swarm."
     output: VoiceOutputConfig = Field(default_factory=VoiceOutputConfig)
     input: VoiceInputConfig = Field(default_factory=VoiceInputConfig)

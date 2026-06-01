@@ -22,8 +22,14 @@ pip install -e ".[dev]"
 jarvis doctor                 # health checks (works before init)
 jarvis init                   # scaffold a git-ignored .jarvis/ with config
 # edit .jarvis/config.toml and add a key, OR export ANTHROPIC_API_KEY=...
-jarvis --mode plan "explain this project"
+
+jarvis                        # start an interactive chat session
+jarvis --mode plan "explain this project"   # or run a single task and exit
 ```
+
+Running `jarvis` with no task drops you into a **live chat**: a persistent
+conversation where each line is a turn and context carries across turns. In-chat
+commands: `/help`, `/mode plan|auto|dangerous`, `/sandbox`, `/exit` (or Ctrl-D).
 
 `jarvis doctor` works before `jarvis init` and tells you exactly what's missing.
 Optional voice extras: `pip install -e ".[voice]"` (TTS) and `".[stt]"` (speech
@@ -177,7 +183,8 @@ parallel permission system).
 ## Commands
 
 ```
-jarvis "<task>"                       run the agent on a task
+jarvis                                start an interactive chat session (REPL)
+jarvis "<task>"                       run the agent on a single task, then exit
 jarvis --mode plan|auto|dangerous     select permission mode
 jarvis --sandbox <path>               set the sandbox root
 jarvis --provider <p> --model <m>     override provider/model

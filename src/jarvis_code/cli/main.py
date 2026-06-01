@@ -24,6 +24,7 @@ from jarvis_code import __version__
 from jarvis_code.config import find_config_path, validate_config_file
 from jarvis_code.permissions import PermissionMode
 
+from .chat import run_chat
 from .doctor import run_doctor
 from .init import run_init
 from .options import GlobalOptions
@@ -69,10 +70,11 @@ def main(
         help="Permission mode: plan (read-only), auto (asks), or dangerous.",
     ),
 ) -> None:
-    """Run a task, or use a subcommand (init, doctor, config, voices)."""
+    """Run a task, start a chat, or use a subcommand (init, doctor, config, voices)."""
     ctx.obj = GlobalOptions(sandbox=sandbox, provider=provider, model=model, mode=mode)
     if ctx.invoked_subcommand is None:
-        typer.echo(ctx.get_help())
+        # Bare `jarvis` with no task -> interactive chat session.
+        raise typer.Exit(run_chat(ctx.obj))
 
 
 @app.command("run", hidden=True)
@@ -84,8 +86,8 @@ def run_cmd(
     opts: GlobalOptions = ctx.obj or GlobalOptions()
     task = " ".join(task_parts or []).strip()
     if not task:
-        typer.echo(ctx.get_help())
-        raise typer.Exit()
+        # `jarvis run` with no task behaves like bare `jarvis`: start a chat.
+        raise typer.Exit(run_chat(opts))
     raise typer.Exit(run_task(opts, task))
 
 

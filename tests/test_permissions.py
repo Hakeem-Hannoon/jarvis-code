@@ -142,6 +142,14 @@ def test_terminal_menu_reprompts_on_invalid() -> None:
     assert any("1, 2, or 3" in o for o in outputs)
 
 
+def test_injected_input_uses_typed_path_not_arrow_menu() -> None:
+    # An injected input_fn (tests / pipes) must NOT enter raw-mode arrow handling.
+    prompter = TerminalPrompter(input_fn=lambda _p: "1", output_fn=lambda _s: None)
+    assert prompter._interactive is False
+    # An explicit interactive=False also forces the typed path.
+    assert TerminalPrompter(interactive=False)._interactive is False
+
+
 # -- executor: end-to-end gating per mode -----------------------------------
 
 

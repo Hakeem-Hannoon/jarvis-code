@@ -270,6 +270,35 @@ def test_azure_foundry_url_uses_models_route_with_model_in_body() -> None:
     assert KEYS["azure"] not in url
 
 
+def test_azure_openai_v1_endpoint() -> None:
+    captured: list = []
+    config = JarvisConfig.model_validate(
+        {
+            "default_provider": "azure",
+            "providers": {
+                "azure": {
+                    "api_key": KEYS["azure"],
+                    "model": "DeepSeek-V4-Pro",
+                    "endpoint": "https://my-res.services.ai.azure.com/openai/v1/",
+                    "api_version": "2024-06-01",
+                }
+            },
+        }
+    )
+    provider = build_provider(
+        config, provider="azure", http_client=mock_client(captured, {"choices": [{"message": {}}]})
+    )
+    provider.complete([Message.user("hi")])
+    request = captured[0]
+    url = str(request.url)
+    # v1 surface: append chat/completions, model in body, Bearer auth, no api-version.
+    assert url == "https://my-res.services.ai.azure.com/openai/v1/chat/completions"
+    assert "api-version" not in url
+    assert json.loads(request.content.decode())["model"] == "DeepSeek-V4-Pro"
+    assert request.headers.get("authorization") == f"Bearer {KEYS['azure']}"
+    assert KEYS["azure"] not in url
+
+
 def test_azure_endpoint_style_forces_foundry() -> None:
     captured: list = []
     config = JarvisConfig.model_validate(

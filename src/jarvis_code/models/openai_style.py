@@ -77,17 +77,33 @@ class OpenAIStyleProvider(HTTPProvider):
             return False
         return "services.ai.azure.com" in (self.endpoint or "").lower()
 
+    def _is_openai_v1(self, base: str) -> bool:
+        """True for the OpenAI-compatible v1 surface (endpoint ends in /openai/v1)."""
+        if self.endpoint_style in ("openai_v1", "v1"):
+            return True
+        return "/openai/v1" in base.lower()
+
     def _url_and_headers(self) -> tuple[str, dict]:
         if self._variant == "azure":
             base = (self.endpoint or "").rstrip("/")
-            headers = {"api-key": self._api_key, "content-type": "application/json"}
+            json_ct = {"content-type": "application/json"}
+            # Case A: OpenAI-compatible v1 endpoint (Azure AI Foundry). The base
+            # already includes /openai/v1; just append chat/completions. Model is
+            # in the body, auth is Bearer, and there is no api-version param.
+            if self._is_openai_v1(base):
+                return f"{base}/chat/completions", {
+                    "Authorization": f"Bearer {self._api_key}", **json_ct
+                }
+            # Case B: Foundry model-inference endpoint (model in body, api-key).
             if self._is_foundry():
                 version = self.api_version or "2024-05-01-preview"
-                # Model is carried in the request body, not the URL path.
-                return f"{base}/models/chat/completions?api-version={version}", headers
+                return f"{base}/models/chat/completions?api-version={version}", {
+                    "api-key": self._api_key, **json_ct
+                }
+            # Case C: classic Azure OpenAI (deployment in the URL path).
             version = self.api_version or "2024-06-01"
             url = f"{base}/openai/deployments/{self.model}/chat/completions?api-version={version}"
-            return url, headers
+            return url, {"api-key": self._api_key, **json_ct}
         base = (self.endpoint or _DEFAULT_BASE[self._variant]).rstrip("/")
         return (
             f"{base}/chat/completions",

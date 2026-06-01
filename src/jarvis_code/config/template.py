@@ -39,10 +39,12 @@ api_key = ""                                  # or set AZURE_API_KEY
 model = "your-deployment-name"                # Azure deployment name (NOT the model id)
 endpoint = "https://your-resource.openai.azure.com"
 api_version = "2024-06-01"
-# endpoint_style: leave unset to auto-detect. Use "foundry" for an Azure AI
-# Foundry inference endpoint (https://<resource>.services.ai.azure.com), which
-# uses /models/chat/completions; "azure_openai" forces the classic deployments URL.
-# endpoint_style = "foundry"
+# endpoint_style: leave unset to auto-detect from the endpoint. Three shapes:
+#   - classic Azure OpenAI: https://<res>.openai.azure.com   (deployment in URL)
+#   - Foundry inference:     https://<res>.services.ai.azure.com  -> /models/chat/completions
+#   - OpenAI-compatible v1:  https://<res>.services.ai.azure.com/openai/v1/  (model in body)
+# Force with "azure_openai" | "foundry" | "openai_v1" if auto-detection is wrong.
+# endpoint_style = "openai_v1"
 
 [voice]
 enabled = false

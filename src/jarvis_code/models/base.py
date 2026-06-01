@@ -54,7 +54,7 @@ class HTTPProvider:
         location: str | None = None,
         endpoint_style: str | None = None,
         http_client: httpx.Client | None = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
         max_tokens: int = 4096,
     ) -> None:
         self.model = model
@@ -65,7 +65,11 @@ class HTTPProvider:
         self.location = location
         self.endpoint_style = endpoint_style
         self.max_tokens = max_tokens
-        self._client = http_client or httpx.Client(timeout=timeout)
+        # Connect should fail fast, but the model may "think" for minutes — give
+        # the read/write/pool the full timeout so long generations don't abort.
+        self._client = http_client or httpx.Client(
+            timeout=httpx.Timeout(timeout, connect=15.0)
+        )
 
     def __repr__(self) -> str:  # never leak the key
         return f"<{type(self).__name__} provider={self.name!r} model={self.model!r}>"

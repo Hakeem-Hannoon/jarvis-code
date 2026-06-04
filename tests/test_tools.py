@@ -134,6 +134,22 @@ def test_move_out_of_root_blocked(registry, ctx) -> None:
     assert not res.ok
 
 
+def test_move_file_dotdot_dst_cannot_escape(registry, ctx, project: Path) -> None:
+    # Regression: dst=".." used to land an in-root file in the parent of root.
+    (project / "loot.txt").write_text("sensitive")
+    res = run(registry, ctx, "move_file", src="loot.txt", dst="..")
+    assert not res.ok
+    assert (project / "loot.txt").exists()              # stayed in root
+    assert not (project.parent / "loot.txt").exists()   # did not escape
+
+
+def test_delete_file_subdir_dotdot_cannot_wipe_root(registry, ctx, project: Path) -> None:
+    # Regression: path="<subdir>/.." used to rmtree the whole sandbox root.
+    res = run(registry, ctx, "delete_file", path="src/..")
+    assert not res.ok
+    assert (project / "src").exists() and (project / "README.md").exists()
+
+
 # -- search tools -----------------------------------------------------------
 
 

@@ -185,6 +185,45 @@ def test_move_out_of_root_rejected(sandbox: Sandbox) -> None:
         sandbox.move("file.txt", "../stolen.txt")
 
 
+# -- regression: a trailing ".." leaf must not fool containment -------------
+# Previously the follow_symlinks=False path (used by delete/move) re-attached a
+# final ".." without normalizing it, so _is_within accepted "<root>/.." (the
+# directory ABOVE the root) and "<root>/sub/.." (the root itself) — escaping
+# containment and bypassing the "refuse to delete root" guard.
+
+
+def test_dotdot_leaf_nofollow_rejected(sandbox: Sandbox) -> None:
+    with pytest.raises(SandboxViolation):
+        sandbox.safe_path("..", follow_symlinks=False)
+
+
+def test_subdir_dotdot_leaf_nofollow_normalizes_to_root(sandbox: Sandbox, root: Path) -> None:
+    resolved = sandbox.safe_path("sub/..", must_exist=True, follow_symlinks=False)
+    assert resolved == root.resolve()
+    assert ".." not in resolved.parts  # no surviving parent-escape component
+
+
+def test_delete_dotdot_leaf_cannot_escape(sandbox: Sandbox, tmp_path: Path) -> None:
+    sentinel = tmp_path / "DO_NOT_TOUCH"  # lives in the parent of the root
+    sentinel.mkdir()
+    with pytest.raises(SandboxViolation):
+        sandbox.delete("..")
+    assert sentinel.exists()
+
+
+def test_delete_subdir_dotdot_refuses_root_wipe(sandbox: Sandbox, root: Path) -> None:
+    with pytest.raises(SandboxViolation):
+        sandbox.delete("sub/..")
+    assert (root / "sub").exists() and (root / "file.txt").exists()
+
+
+def test_move_dotdot_dst_cannot_escape(sandbox: Sandbox, root: Path, tmp_path: Path) -> None:
+    with pytest.raises(SandboxViolation):
+        sandbox.move("file.txt", "..")
+    assert (root / "file.txt").exists()          # stayed in root
+    assert not (tmp_path / "file.txt").exists()  # did not land in parent-of-root
+
+
 # -- cwd validation ---------------------------------------------------------
 
 

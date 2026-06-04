@@ -119,9 +119,24 @@ class Sandbox:
             exists = resolved.exists()
         else:
             # Canonicalize the parent (still follows a symlinked parent out of
-            # root), then re-attach the un-dereferenced leaf name.
-            resolved = p.parent.resolve() / p.name
+            # root), then re-attach the un-dereferenced leaf name. The parent is
+            # already symlink-free, so normpath() collapses a ``.``/``..`` leaf
+            # *lexically* — it never dereferences a final symlink — so a trailing
+            # ``..`` (e.g. ``sub/..`` or ``..``) cannot survive to fool the
+            # parents-based ``_is_within`` check into accepting the root itself or
+            # the directory above it.
+            resolved = Path(os.path.normpath(p.parent.resolve() / p.name))
             exists = os.path.lexists(resolved)
+
+        # Invariant (defense in depth): a fully canonical in-root path never
+        # contains a ``..`` component. If one survived the logic above, do not
+        # trust the parents-based check below — treat it as an escape attempt.
+        if os.pardir in resolved.parts:
+            self._violation(
+                "Path did not fully canonicalize",
+                attempted=raw,
+                resolved=str(resolved),
+            )
 
         if not self._is_within(resolved):
             self._violation(

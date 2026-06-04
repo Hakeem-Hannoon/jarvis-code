@@ -21,7 +21,7 @@ import subprocess
 from jarvis_code.permissions.manager import RiskLevel
 from jarvis_code.permissions.modes import Capability
 from jarvis_code.sandbox import SandboxViolation
-from jarvis_code.utils.logging import get_logger
+from jarvis_code.utils.logging import get_logger, scrub_secret_env
 
 from .base import Tool, ToolContext, ToolResult
 
@@ -115,6 +115,10 @@ class RunShellTool(Tool):
                 command,
                 shell=True,
                 cwd=str(workdir),
+                # Provider API keys (and other credential-shaped vars) are
+                # stripped from the child env so a command like `env` can never
+                # read a key back into captured output / model context.
+                env=scrub_secret_env(),
                 capture_output=True,
                 text=True,
                 timeout=ctx.shell_timeout,

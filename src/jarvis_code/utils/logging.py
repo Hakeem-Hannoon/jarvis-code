@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import io
 import logging
+import os
+import re
+from collections.abc import Mapping
 
 _ROOT_NAME = "jarvis_code"
 
@@ -19,6 +22,18 @@ _ROOT_NAME = "jarvis_code"
 _MIN_SECRET_LEN = 6
 
 _REDACTION = "***REDACTED***"
+#: Public alias for the marker that replaces a redacted secret.
+REDACTION_MARKER = _REDACTION
+
+# Environment variables whose *name* looks like a credential. These are stripped
+# from any subprocess environment (see :func:`scrub_secret_env`) so a shell or
+# git command can never read a key back into the model's context — even a secret
+# we never registered. PATH/HOME/etc. are untouched.
+_SECRET_ENV_NAME = re.compile(
+    r"(?:_API_KEY|_APIKEY|_ACCESS_KEY|_SECRET_KEY|_SECRET|_TOKEN|_PASSWORD|_PASSWD"
+    r"|_CREDENTIALS?)$",
+    re.IGNORECASE,
+)
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -53,6 +68,17 @@ class _SecretRedactor:
                 text = text.replace(secret, _REDACTION)
         return text
 
+    def scrub_env(self, env: Mapping[str, str]) -> dict[str, str]:
+        """Copy ``env`` dropping credential-named vars and registered values."""
+        out: dict[str, str] = {}
+        for key, value in env.items():
+            if _SECRET_ENV_NAME.search(key):
+                continue
+            if isinstance(value, str) and value in self._secrets:
+                continue
+            out[key] = value
+        return out
+
     def clear(self) -> None:
         self._secrets.clear()
 
@@ -68,6 +94,18 @@ def register_secret(value: object) -> None:
 def redact(text: str) -> str:
     """Return ``text`` with every registered secret replaced by a marker."""
     return _redactor.redact(text)
+
+
+def scrub_secret_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return a copy of ``env`` (default ``os.environ``) safe for a subprocess.
+
+    Removes (a) every variable whose *value* is a registered secret — precisely
+    dropping the configured provider API keys however they happen to be named —
+    and (b) variables whose *name* matches a credential-shaped pattern. Pass the
+    result as ``subprocess.run(..., env=...)`` so a child process cannot read a
+    key back into captured output (and thus into model context).
+    """
+    return _redactor.scrub_env(os.environ if env is None else env)
 
 
 def clear_secrets() -> None:

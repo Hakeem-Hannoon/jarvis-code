@@ -43,6 +43,10 @@ class VoiceReporter:
             return
         self._vs.announce_tool(name)
 
+    def action(self, request: object) -> None:
+        # The boxed command / diff is a visual (console) concern; nothing spoken.
+        return None
+
     def tool_finished(self, name: str, ok: bool, detail: str) -> None:
         return None
 

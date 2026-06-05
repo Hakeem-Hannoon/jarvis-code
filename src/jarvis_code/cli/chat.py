@@ -17,16 +17,20 @@ import typer
 
 from jarvis_code.agent import AgentRuntime, assemble_runtime
 from jarvis_code.agent.loop import RunStatus
+from jarvis_code.agent.memory import save_project_memory
 from jarvis_code.config import ConfigError, Effort, MissingAPIKeyError, load_config
+from jarvis_code.events import EventBus, InstructionQueue
 from jarvis_code.input import MicController, build_mic_controller
 from jarvis_code.models import ProviderError
 from jarvis_code.permissions import PermissionMode, TerminalPrompter
 from jarvis_code.sandbox import Sandbox, SandboxRootError, resolve_sandbox_root
 from jarvis_code.voice import VoiceReporter, VoiceSubsystem, select_engine
 
+from .keyinput import IdleAction, IdleIntent, read_idle_intent, supports_raw_keys
 from .lineedit import colored_prompt, save_history, setup_line_editing
 from .options import GlobalOptions
 from .run import _MADMAX_HEADSUP, resolve_effort
+from .steer import PausingQueuePrompter, SteerSession
 from .ui import CompositeReporter, ConsoleReporter
 
 _EXIT = {"/exit", "/quit", "exit", "quit", ":q"}
@@ -36,9 +40,17 @@ _HELP = """\
 Commands:
   /help                 show this help
   /talk (or /ptt)       push-to-talk: speak your next message, Enter to stop
+  /mic                  cycle mic mode (Open Mic / Push to Talk / Muted)
   /mode plan|auto|dangerous   switch permission mode for the rest of the session
   /sandbox              show the current sandbox root
   /exit (or Ctrl-D)     leave the chat
+
+Voice: when voice input is on, just tap Space at the prompt to start talking
+(terminals can't sense key-release, so it's tap-to-start; Enter stops recording).
+
+Steering: while the agent is working, type a line and press Enter to steer it —
+it's folded in after the current small step. Say "wait"/"actually …" to adjust,
+"stop" to halt, or just answer an approval prompt (yes/no/your own words).
 
 Editing: ↑/↓ history · ←/→ move · Ctrl-A/E start/end · Ctrl-K/U kill · Ctrl-W del word
 Anything else is sent to the agent as your next message."""
@@ -78,15 +90,24 @@ def run_chat(opts: GlobalOptions) -> int:
             voice_sub = VoiceSubsystem(engine, config.voice)
             await voice_sub.start()
             reporter = CompositeReporter([ConsoleReporter(), VoiceReporter(voice_sub)])
+        # Live steering: one shared instruction queue feeds both the steering
+        # reader (talk while it works) and the approval prompt (answers route
+        # here too). The prompter pauses the reader while it owns the terminal.
+        bus = EventBus()
+        instructions = InstructionQueue(bus)
+        steer = SteerSession(instructions, echo=typer.echo)
+        prompter = PausingQueuePrompter(instructions, TerminalPrompter(), steer.prompt_active)
         try:
             runtime = assemble_runtime(
                 config=config,
                 sandbox=sandbox,
                 mode=opts.mode,
                 provider=None,
-                prompter=TerminalPrompter(),
+                prompter=prompter,
                 reporter=reporter,
                 effort=effort,
+                instructions=instructions,
+                bus=bus,
             )
         except MissingAPIKeyError as exc:
             typer.echo(str(exc), err=True)
@@ -96,8 +117,20 @@ def run_chat(opts: GlobalOptions) -> int:
         if effort == Effort.MADMAX:
             typer.echo(typer.style(_MADMAX_HEADSUP, fg=typer.colors.YELLOW, bold=True))
         _print_banner(opts.mode, root, mic, voice_on=voice_on, engine_label=engine_label, effort=effort)
+        # Tap-Space-to-talk only when the mic is on and we have a real TTY;
+        # otherwise the chat stays a plain typed-line prompt.
+        key_reader = None
+        if mic.enabled and supports_raw_keys():
+            def key_reader(edit_prompt: str) -> IdleIntent:  # noqa: E731
+                return read_idle_intent(_plain_voice_prompt(), edit_prompt)
         try:
-            await chat_loop(runtime, prompt_fn=_read_line, echo=typer.echo, mic=mic)
+            await chat_loop(
+                runtime, prompt_fn=_read_line, echo=typer.echo, mic=mic,
+                key_reader=key_reader, steer=steer,
+            )
+            # Persist a concise notes block so the next session has context.
+            if save_project_memory(sandbox, runtime.state) is not None:
+                typer.echo(typer.style("  notes saved to JARVIS.md for next time", dim=True))
         finally:
             save_history()
             if voice_sub is not None:
@@ -138,16 +171,31 @@ def _print_banner(
     if mode == PermissionMode.DANGEROUS:
         typer.echo(typer.style("  " + _DANGEROUS_WARNING, fg=c.RED, bold=True))
 
-    status = [f"mode {mode.value}", f"effort {effort.value}", f"dir {_short_path(root)}",
-              f"voice {engine_label}" if voice_on else "voice off"]
-    if mic is not None and mic.enabled:
-        status.append(mic.mic_bar())
-    typer.echo(typer.style("  " + "   ·   ".join(status), dim=True))
+    # Mode + effort as prominent coloured chips so the user always knows the
+    # posture the agent is running under (mode colour ranks plan→auto→dangerous).
+    mode_bg = {
+        PermissionMode.PLAN: c.GREEN,
+        PermissionMode.AUTO: c.CYAN,
+        PermissionMode.DANGEROUS: c.RED,
+    }[mode]
+    typer.echo(
+        "  "
+        + typer.style(f" MODE: {mode.value} ", fg=c.BLACK, bg=mode_bg, bold=True)
+        + "  "
+        + typer.style(f" EFFORT: {effort.value} ", fg=c.BLACK, bg=c.WHITE, bold=True)
+    )
 
-    hints = ["/help", "↑↓ history", "/exit"]
+    meta = [f"dir {_short_path(root)}", f"voice {engine_label}" if voice_on else "voice off"]
     if mic is not None and mic.enabled:
-        hints.insert(1, "/talk to speak")
-    typer.echo(typer.style("  " + "   ·   ".join(hints), dim=True))
+        meta.append(mic.mic_bar())
+    typer.echo(typer.style("  " + "   ·   ".join(meta), dim=True))
+
+    if mic is not None and mic.enabled:
+        typer.echo(
+            typer.style("  🎙  Press Space to talk", fg=c.MAGENTA, bold=True)
+            + typer.style("  ·  Enter stops recording  ·  or type /talk", dim=True)
+        )
+    typer.echo(typer.style("  /help   ·   ↑↓ history   ·   type while it works to steer   ·   /exit", dim=True))
     typer.echo("")
 
 
@@ -196,18 +244,38 @@ async def chat_loop(
     echo: Callable[[str], None],
     mic: MicController | None = None,
     stop_waiter: Callable[[], Awaitable[None]] | None = None,
+    key_reader: Callable[[str], IdleIntent] | None = None,
+    steer: SteerSession | None = None,
 ) -> None:
-    """The testable core loop. ``prompt_fn`` returns a line or raises EOFError."""
+    """The testable core loop.
+
+    Without ``key_reader`` each idle turn is one ``prompt_fn`` line (the original
+    behavior, used by tests and non-TTY runs). With ``key_reader`` an idle turn is
+    a single keypress: Space starts a voice capture; any typed character begins a
+    normal edited line. ``steer``, when given, reads live steering while a turn
+    runs. Either way ``EOFError`` leaves the chat.
+    """
     waiter = stop_waiter or _wait_for_enter
     while True:
         try:
-            line = await asyncio.to_thread(prompt_fn, _you_prompt())
+            if key_reader is not None:
+                intent = await asyncio.to_thread(key_reader, _you_prompt())
+            else:
+                intent = IdleIntent(IdleAction.LINE, await asyncio.to_thread(prompt_fn, _you_prompt()))
         except EOFError:
             echo("")
             echo("Bye.")
             return
 
-        message = line.strip()
+        if intent.action is IdleAction.NONE:
+            continue
+        if intent.action is IdleAction.TALK:
+            spoken = await _capture_voice(mic, echo, waiter)
+            if spoken is not None:
+                await _run_message(runtime, spoken, echo, steer)
+            continue
+
+        message = intent.text.strip()
         if not message:
             continue
         if message in _EXIT:
@@ -219,6 +287,9 @@ async def chat_loop(
         if message == "/sandbox":
             echo(str(runtime.executor.ctx.sandbox.root))
             continue
+        if message == "/mic":
+            _handle_mic(mic, echo)
+            continue
         if message.startswith("/mode"):
             _handle_mode(runtime, message, echo)
             continue
@@ -228,16 +299,49 @@ async def chat_loop(
                 continue
             message = spoken  # fall through and run the transcribed message
 
-        try:
-            result = await runtime.run(message)
-        except ProviderError as exc:
-            echo(typer.style(str(exc), fg=typer.colors.RED))
-            continue
-        _print_turn_footer(result, echo)
+        await _run_message(runtime, message, echo, steer)
+
+
+async def _run_message(
+    runtime: AgentRuntime,
+    message: str,
+    echo: Callable[[str], None],
+    steer: SteerSession | None = None,
+) -> None:
+    """Run one agent turn for ``message`` and print its footer (errors are caught).
+
+    ``steer`` (if given) reads live steering for the duration of the turn, so you
+    can talk to the agent while it works; it stops as soon as the turn ends.
+    """
+    if steer is not None:
+        steer.start()
+    try:
+        result = await runtime.run(message)
+    except ProviderError as exc:
+        echo(typer.style(str(exc), fg=typer.colors.RED))
+        return
+    finally:
+        if steer is not None:
+            steer.stop()
+    _print_turn_footer(result, echo)
+
+
+def _handle_mic(mic: MicController | None, echo: Callable[[str], None]) -> None:
+    """Cycle the mic mode (Open Mic → Push to Talk → Muted)."""
+    if mic is None or not getattr(mic, "enabled", False):
+        echo(typer.style("Voice input isn't enabled (see /help).", fg=typer.colors.YELLOW))
+        return
+    mic.cycle_mode()
+    echo(typer.style(mic.mic_bar(), dim=True))
 
 
 def _you_prompt() -> str:
     return colored_prompt("you ❯ ")
+
+
+def _plain_voice_prompt() -> str:
+    """Idle prompt shown for the raw single-key read (no readline width markers)."""
+    return typer.style("you 🎙 ❯ ", fg=typer.colors.CYAN, bold=True)
 
 
 def _handle_mode(runtime: AgentRuntime, message: str, echo: Callable[[str], None]) -> None:

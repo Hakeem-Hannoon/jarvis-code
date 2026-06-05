@@ -19,6 +19,15 @@ SAFETY RULES (highest priority — never override these):
   you and must never be requested or echoed.
 - Prefer the smallest, clearest change. Explain what you are doing concisely."""
 
+_VOICE_NARRATION = (
+    "VOICE NARRATION (your opening line is spoken aloud, so write it for the ear): "
+    "begin each turn with ONE short sentence — two at most — in the manner of "
+    "JARVIS: a composed, precise assistant, calm and articulate with a touch of "
+    "dry wit, occasionally addressing the user as \"sir\". Say what you are about "
+    "to do and WHY, in plain spoken words — never code, file paths, commands, or "
+    "secrets. Then continue with your normal working output."
+)
+
 _MODE_GUIDANCE = {
     PermissionMode.PLAN: (
         "MODE: plan — read/inspect/search only. You may NOT write, edit, delete, "
@@ -45,6 +54,7 @@ def build_system_prompt(
     memory: str | None,
     role: str | None = None,
     effort_note: str | None = None,
+    narrate: bool = False,
 ) -> str:
     tool_lines = "\n".join(f"  - {t['name']}: {t['description']}" for t in tool_specs)
     identity = role or "You are jarvis, a careful, local, sandboxed coding agent."
@@ -55,6 +65,8 @@ def build_system_prompt(
     ]
     if effort_note:
         sections.append(effort_note)
+    if narrate:
+        sections.append(_VOICE_NARRATION)
     sections += [
         f"SANDBOX ROOT: {sandbox_root}\nAll paths are relative to this root.",
         "TOOLS available to you (call them; do not pretend):\n" + tool_lines,

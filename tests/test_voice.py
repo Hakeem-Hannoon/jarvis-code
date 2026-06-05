@@ -125,6 +125,16 @@ def test_say_argv_includes_voice_when_given() -> None:
     assert "-v" not in say_argv("Hi.", SpeakOptions(), say_bin="say")
 
 
+def test_say_argv_pitch_and_robotic_only_when_set() -> None:
+    # Defaults: no inline pitch/modulation commands (unchanged baseline behavior).
+    base = say_argv("Hi.", SpeakOptions(), say_bin="say")
+    assert "[[pbas" not in base[-1] and "[[pmod" not in base[-1]
+    # Lowered pitch + a robotic (flatter) delivery inject the inline `say` commands.
+    styled = say_argv("Hi.", SpeakOptions(pitch=0.8, robotic=0.5), say_bin="say")
+    assert "[[pbas" in styled[-1] and "[[pmod" in styled[-1]
+    assert styled[-1].endswith(" Hi.")  # the words themselves are unchanged
+
+
 def test_resolve_say_voice_maps_jarvis_preset(monkeypatch) -> None:
     monkeypatch.setattr(vsystem, "_available_say_voices", lambda: {"Daniel", "Alex"})
     assert vsystem._resolve_say_voice("jarvis-inspired") == "Daniel"  # JARVIS -> British male
@@ -220,6 +230,21 @@ async def test_subsystem_speaks_curated_and_drains() -> None:
     assert engine.spoken == ["Executing your command.", "Running diagnostics."]
 
 
+def test_subsystem_options_carry_voice_character() -> None:
+    vs = VoiceSubsystem(FakeEngine(), VoiceConfig(pitch=0.8, robotic=0.4))
+    assert vs.options.pitch == 0.8
+    assert vs.options.robotic == 0.4
+
+
+def test_system_prompt_narration_gated_on_opt_in() -> None:
+    from jarvis_code.agent.prompts import build_system_prompt
+    from jarvis_code.permissions import PermissionMode
+
+    common = dict(mode=PermissionMode.AUTO, sandbox_root="/x", tool_specs=[], memory=None)
+    assert "spoken aloud" not in build_system_prompt(**common)
+    assert "spoken aloud" in build_system_prompt(**common, narrate=True)
+
+
 @pytest.mark.asyncio
 async def test_stop_clears_pending_and_stops_engine() -> None:
     engine = FakeEngine()
@@ -235,15 +260,18 @@ async def test_stop_clears_pending_and_stops_engine() -> None:
 # -- descriptive narration: opt-in model-authored intent --------------------
 
 
-def test_clean_intent_first_sentence_capped_and_redacted() -> None:
+def test_clean_intent_brief_capped_and_redacted() -> None:
     jlog.register_secret("sk-intentleak-123")
-    out = vmsg.clean_intent("Running with sk-intentleak-123 now. Second sentence here.")
+    out = vmsg.clean_intent(
+        "Running with sk-intentleak-123 now. Then I verify the build. And a third part."
+    )
     assert out is not None
-    assert "sk-intentleak-123" not in out
-    assert "Second sentence" not in out  # only the first sentence
+    assert "sk-intentleak-123" not in out      # secret redacted
+    assert "verify" in out                      # keeps up to two sentences (the why)
+    assert "third part" not in out.lower()      # but never a third
     assert vmsg.clean_intent("   ") is None
     assert vmsg.clean_intent(None) is None
-    assert len(vmsg.clean_intent("word " * 100)) <= 141
+    assert len(vmsg.clean_intent("word " * 100)) <= 201  # length capped
 
 
 def test_specific_action_phrase_uses_program_name_for_shell() -> None:

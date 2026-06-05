@@ -9,6 +9,7 @@ import typer
 
 from jarvis_code.agent import assemble_runtime
 from jarvis_code.agent.loop import RunStatus
+from jarvis_code.agent.memory import save_project_memory
 from jarvis_code.config import ConfigError, Effort, MissingAPIKeyError, load_config
 from jarvis_code.permissions import PermissionMode, TerminalPrompter
 from jarvis_code.sandbox import Sandbox, SandboxRootError, resolve_sandbox_root
@@ -91,4 +92,6 @@ def run_task(opts: GlobalOptions, task: str) -> int:
         return 1
 
     print_finish_summary(result)
+    if save_project_memory(sandbox, result.state) is not None:
+        typer.echo(typer.style("  notes saved to JARVIS.md (context for next time)", dim=True))
     return 0 if result.status == RunStatus.COMPLETE else 1

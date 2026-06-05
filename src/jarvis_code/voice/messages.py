@@ -115,26 +115,38 @@ def specific_action_phrase(tool_name: str, summary: str | None) -> str:
     return tool_status_phrase(tool_name) or "Working."
 
 
-def clean_intent(text: str | None) -> str | None:
-    """Reduce model lead-in text to one short spoken line (capped + redacted).
+def clean_intent(
+    text: str | None, *, max_sentences: int = 2, max_chars: int = 200
+) -> str | None:
+    """Reduce model lead-in text to a short spoken line (capped + redacted).
 
-    Used ONLY when ``voice.speak_intent`` is opted in. Returns None when nothing
-    speakable remains. This is the one place model-authored words may be voiced;
-    ``shorten`` still caps length and scrubs registered secrets as a safety net.
+    Used ONLY when ``voice.speak_intent`` is opted in. Keeps the model's opening
+    one or two sentences — enough to say what it's doing and *why* — then caps
+    length and scrubs registered secrets via ``shorten`` as a safety net. Returns
+    None when nothing speakable remains. This is the one place model-authored
+    words may be voiced; raw output, file contents, and secrets never are.
     """
+    import re
+
     stripped = (text or "").strip()
     if not stripped:
         return None
-    # First sentence / first line only — keep it short and status-like.
-    first = stripped.splitlines()[0]
-    for sep in (". ", "! ", "? "):
-        if sep in first:
-            first = first.split(sep, 1)[0]
+    # The lead-in paragraph (up to a blank line), collapsed to one spoken line.
+    lead: list[str] = []
+    for line in stripped.splitlines():
+        if not line.strip():
             break
-    first = first.strip().rstrip(".!?").strip()
-    if not first:
+        lead.append(line.strip())
+    blob = " ".join(lead).strip()
+    if not blob:
         return None
-    spoken = shorten(first, max_chars=140)
+    # Keep at most `max_sentences` sentences; drop only the trailing terminator
+    # so a two-sentence reason still reads naturally when spoken.
+    sentences = re.split(r"(?<=[.!?])\s+", blob)
+    spoken = " ".join(sentences[:max_sentences]).strip().rstrip(".!?").strip()
+    if not spoken:
+        return None
+    spoken = shorten(spoken, max_chars=max_chars)
     return spoken or None
 
 

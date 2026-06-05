@@ -28,7 +28,11 @@ class VoiceSubsystem:
         self.voice = voice
         self.max_chars = voice.output.max_chars
         self.options = SpeakOptions(
-            voice=voice.default_voice, rate=voice.speech_rate, volume=voice.volume
+            voice=voice.default_voice,
+            rate=voice.speech_rate,
+            volume=voice.volume,
+            pitch=voice.pitch,
+            robotic=voice.robotic,
         )
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._worker: asyncio.Task | None = None

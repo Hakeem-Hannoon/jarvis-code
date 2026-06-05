@@ -15,6 +15,7 @@ from jarvis_code.agent import (
     assemble_runtime,
     build_system_prompt,
     load_project_memory,
+    save_project_memory,
 )
 from jarvis_code.config import JarvisConfig
 from jarvis_code.models import ModelResponse, ToolCall
@@ -87,6 +88,42 @@ def test_memory_fallback_to_dot_jarvis(fixture_repo: Sandbox) -> None:
 
 def test_memory_absent_returns_none(fixture_repo: Sandbox) -> None:
     assert load_project_memory(fixture_repo) is None
+
+
+def test_save_then_load_round_trips(fixture_repo: Sandbox) -> None:
+    state = RunState(goal="add the steering feature", files_changed=["a.py", "b.py"],
+                     commands_run=["pytest -q"])
+    assert save_project_memory(fixture_repo, state) is not None
+    loaded = load_project_memory(fixture_repo)
+    assert loaded is not None
+    assert "add the steering feature" in loaded   # next session gets context
+    assert "a.py" in loaded
+
+
+def test_save_preserves_user_written_content(fixture_repo: Sandbox) -> None:
+    note = "# My project\nAlways run black before committing.\n"
+    (Path(fixture_repo.root) / "JARVIS.md").write_text(note)
+    save_project_memory(fixture_repo, RunState(goal="did a thing"))
+    text = (Path(fixture_repo.root) / "JARVIS.md").read_text()
+    assert "Always run black before committing." in text  # user content kept
+    assert "did a thing" in text                          # auto block added
+    # A second save must not duplicate or drop the user's note.
+    save_project_memory(fixture_repo, RunState(goal="did another thing"))
+    text2 = (Path(fixture_repo.root) / "JARVIS.md").read_text()
+    assert text2.count("Always run black before committing.") == 1
+    assert "did another thing" in text2 and "did a thing" not in text2  # refreshed
+
+
+def test_save_noop_when_nothing_happened(fixture_repo: Sandbox) -> None:
+    assert save_project_memory(fixture_repo, RunState()) is None
+    assert not (Path(fixture_repo.root) / "JARVIS.md").exists()
+
+
+def test_saved_notes_redact_secrets(fixture_repo: Sandbox) -> None:
+    jlog.register_secret("sk-memleak-0123456789")
+    save_project_memory(fixture_repo, RunState(goal="deploy with sk-memleak-0123456789"))
+    text = (Path(fixture_repo.root) / "JARVIS.md").read_text()
+    assert "sk-memleak-0123456789" not in text
 
 
 def test_memory_is_deprioritized_in_system_prompt() -> None:

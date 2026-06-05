@@ -137,8 +137,19 @@ def say_argv(
     if voice:
         argv += ["-v", voice]
     argv += ["-r", str(wpm)]
-    # `say` interprets [[...]] as speech commands, so volm is not spoken aloud.
-    argv.append(f"[[volm {vol:.2f}]] {text}")
+    # `say` interprets [[...]] as speech commands, so these are applied, not spoken.
+    cmds = [f"[[volm {vol:.2f}]]"]
+    pitch = getattr(options, "pitch", 1.0)
+    if abs(pitch - 1.0) > 1e-3:
+        # pbas = pitch baseline; lower is deeper. Honored by classic voices.
+        pbas = max(1, min(99, round(50 * pitch)))
+        cmds.append(f"[[pbas {pbas}]]")
+    robotic = getattr(options, "robotic", 0.0)
+    if robotic > 1e-3:
+        # pmod = pitch modulation/range; lowering it flattens intonation (robotic).
+        pmod = max(0, min(99, round(50 * (1.0 - min(1.0, robotic)))))
+        cmds.append(f"[[pmod {pmod}]]")
+    argv.append(" ".join(cmds) + " " + text)
     return argv
 
 

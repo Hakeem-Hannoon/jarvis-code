@@ -56,12 +56,22 @@ class ToolExecutor:
         self.permissions = permissions
         self.ctx = ctx
 
+    def preview(
+        self, tool_name: str, args: dict, rationale: str | None = None
+    ) -> PermissionRequest | None:
+        """Build the request for an about-to-run tool (for the reporter), or None."""
+        tool = self.registry.get(tool_name)
+        if tool is None:
+            return None
+        return self.build_request(tool_name, tool.capability, args, rationale)
+
     def execute(
         self,
         tool_name: str,
         args: dict,
         *,
         rationale: str | None = None,
+        request: PermissionRequest | None = None,
     ) -> ExecutionResult:
         tool = self.registry.get(tool_name)
         if tool is None:
@@ -72,7 +82,8 @@ class ToolExecutor:
                 reason="unknown tool",
             )
 
-        request = self._build_request(tool_name, tool.capability, args, rationale)
+        if request is None:
+            request = self.build_request(tool_name, tool.capability, args, rationale)
         outcome = self.permissions.authorize(request)
 
         if outcome.kind == OutcomeKind.ALLOWED:
@@ -97,7 +108,7 @@ class ToolExecutor:
 
     # -- request construction ----------------------------------------------
 
-    def _build_request(
+    def build_request(
         self,
         tool_name: str,
         capability: Capability,

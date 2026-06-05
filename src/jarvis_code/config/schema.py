@@ -104,6 +104,13 @@ class VoiceConfig(BaseModel):
     fallback_engine: VoiceEngineName = VoiceEngineName.SYSTEM
     speech_rate: float = Field(default=1.0, gt=0)
     volume: float = Field(default=0.9, ge=0, le=1)
+    # Voice character (macOS `say` path). 1.0 = the voice's natural pitch; lower
+    # is deeper/more synthetic. ``robotic`` flattens intonation toward a monotone
+    # (0 = natural delivery, 1 = fully flat). Together they give a realistic voice
+    # a measured, robotic cadence. Classic `say` voices honor these; some neural
+    # "(Premium)/(Enhanced)" voices ignore inline pitch commands.
+    pitch: float = Field(default=1.0, gt=0, le=2)
+    robotic: float = Field(default=0.0, ge=0, le=1)
     announce_subagents: bool = True
     announce_permissions: bool = True
     # Opt-in: when true, spoken status may include a one-line, model-authored

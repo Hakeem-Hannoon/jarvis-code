@@ -7,6 +7,7 @@ instruction directly (see ``QueueAwarePrompter``) and interprets it as a respons
 
 from __future__ import annotations
 
+import threading
 from collections import deque
 
 from .bus import EventBus
@@ -15,9 +16,13 @@ from .types import EventType, Instruction, InstructionKind
 
 
 class InstructionQueue:
+    """Thread-safe queue: a live reader thread may ``submit`` while the agent
+    loop ``drain``s at its checkpoints, so all access is guarded by a lock."""
+
     def __init__(self, bus: EventBus | None = None) -> None:
         self._items: deque[Instruction] = deque()
         self._bus = bus
+        self._lock = threading.Lock()
 
     def submit(
         self,
@@ -27,7 +32,8 @@ class InstructionQueue:
         kind: InstructionKind | None = None,
     ) -> Instruction:
         instr = Instruction(kind=kind or classify(text), text=text, source=source)
-        self._items.append(instr)
+        with self._lock:
+            self._items.append(instr)
         if self._bus is not None:
             if source == "voice":
                 self._bus.emit(EventType.USER_VOICE_INPUT, text=text, kind=instr.kind.value)

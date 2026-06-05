@@ -9,6 +9,7 @@ import pytest
 from jarvis_code.agent.loop import RunResult, RunStatus
 from jarvis_code.agent.state import RunState
 from jarvis_code.cli.chat import chat_loop
+from jarvis_code.cli.keyinput import IdleAction, IdleIntent, read_idle_intent
 from jarvis_code.models import ProviderError
 from jarvis_code.permissions import PermissionMode
 
@@ -176,6 +177,102 @@ async def test_chat_talk_without_mic_configured() -> None:
     )
     assert rt.runs == []
     assert any("isn't configured" in o for o in out)
+
+
+# -- single-key idle input (tap Space to talk) ------------------------------
+
+
+def _intents_from(items):
+    it = iter(items)
+
+    def reader(_prompt: str) -> IdleIntent:
+        try:
+            return next(it)
+        except StopIteration:
+            raise EOFError from None
+
+    return reader
+
+
+def test_read_idle_intent_falls_back_to_line_without_tty() -> None:
+    # The test runner has no TTY, so this exercises the plain-line fallback path.
+    intent = read_idle_intent("plain ", "edit ", input_fn=lambda _p: "hello there")
+    assert intent.action is IdleAction.LINE
+    assert intent.text == "hello there"
+
+
+@pytest.mark.asyncio
+async def test_chat_key_reader_space_starts_talk() -> None:
+    out: list[str] = []
+    rt = FakeRuntime()
+    mic = FakeMic(transcript="run the tests")
+    await chat_loop(
+        rt,
+        prompt_fn=_prompt_from([]),  # unused: key_reader drives idle reads
+        echo=out.append,
+        mic=mic,
+        stop_waiter=_immediate_stop,
+        key_reader=_intents_from(
+            [IdleIntent(IdleAction.TALK), IdleIntent(IdleAction.LINE, "/exit")]
+        ),
+    )
+    assert mic.recorded is True
+    assert rt.runs == ["run the tests"]  # the spoken transcript became a turn
+
+
+@pytest.mark.asyncio
+async def test_chat_key_reader_none_is_skipped() -> None:
+    out: list[str] = []
+    rt = FakeRuntime()
+    await chat_loop(
+        rt,
+        prompt_fn=_prompt_from([]),
+        echo=out.append,
+        key_reader=_intents_from(
+            [
+                IdleIntent(IdleAction.NONE),  # an ignored key (e.g. a stray arrow)
+                IdleIntent(IdleAction.LINE, "do it"),
+                IdleIntent(IdleAction.LINE, "/exit"),
+            ]
+        ),
+    )
+    assert rt.runs == ["do it"]
+
+
+@pytest.mark.asyncio
+async def test_chat_key_reader_typed_line_still_runs_commands() -> None:
+    out: list[str] = []
+    rt = FakeRuntime()
+    await chat_loop(
+        rt,
+        prompt_fn=_prompt_from([]),
+        echo=out.append,
+        key_reader=_intents_from(
+            [IdleIntent(IdleAction.LINE, "/help"), IdleIntent(IdleAction.LINE, "/exit")]
+        ),
+    )
+    assert any("Commands:" in o for o in out)  # slash commands work via key_reader too
+    assert rt.runs == []
+
+
+@pytest.mark.asyncio
+async def test_chat_mic_command_cycles_mode() -> None:
+    out: list[str] = []
+    rt = FakeRuntime()
+
+    class CyclingMic(FakeMic):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cycled = 0
+
+        def cycle_mode(self):
+            self.cycled += 1
+            return None
+
+    mic = CyclingMic()
+    await chat_loop(rt, prompt_fn=_prompt_from(["/mic", "/exit"]), echo=out.append, mic=mic)
+    assert mic.cycled == 1
+    assert rt.runs == []
 
 
 # -- line editing + banner helpers ------------------------------------------

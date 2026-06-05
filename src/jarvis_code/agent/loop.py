@@ -17,7 +17,7 @@ from enum import Enum
 from jarvis_code.config import Effort, JarvisConfig
 from jarvis_code.events import EventBus, EventType, InstructionKind, InstructionQueue
 from jarvis_code.models import ProviderError, build_provider
-from jarvis_code.permissions import OutcomeKind, PermissionManager, PermissionMode
+from jarvis_code.permissions import Decision, OutcomeKind, PermissionManager, PermissionMode
 from jarvis_code.sandbox import Sandbox
 from jarvis_code.sessions import SessionWriter
 from jarvis_code.tools import ToolContext, ToolExecutor, build_default_registry
@@ -185,8 +185,15 @@ class AgentRuntime:
                 self.session.tool_result(tc.name, False, note, None, {})
                 continue
 
+            # Show the boxed, risk-coloured command (or the "updates" diff) before
+            # it runs — unless policy will deny it outright.
+            request = self.executor.preview(tc.name, tc.arguments, response.text or None)
+            if request is not None and (
+                self.executor.permissions.decide(request.capability) is not Decision.DENY
+            ):
+                self.reporter.action(request)
             outcome = self.executor.execute(
-                tc.name, tc.arguments, rationale=response.text or None
+                tc.name, tc.arguments, rationale=response.text or None, request=request
             )
             self.session.permission_decision(
                 tc.name, capability, outcome.outcome.value, outcome.reason
@@ -272,6 +279,8 @@ def assemble_runtime(
         tool_specs=registry.specs(),
         memory=memory,
         effort_note=profile.guidance,
+        # In-character spoken narration only when voice output + intent are on.
+        narrate=config.voice.enabled and config.voice.speak_intent,
     )
     context = ConversationContext(system_prompt)
     state = RunState()

@@ -30,15 +30,20 @@ from .keyinput import IdleAction, IdleIntent, read_idle_intent, supports_raw_key
 from .lineedit import colored_prompt, save_history, setup_line_editing
 from .options import GlobalOptions
 from .run import _MADMAX_HEADSUP, resolve_effort
-from .steer import PausingQueuePrompter, SteerSession
+from .steer import PausingQueuePrompter, SteerSession, make_console_asker
 from .ui import CompositeReporter, ConsoleReporter
 
 _EXIT = {"/exit", "/quit", "exit", "quit", ":q"}
 _TALK = {"/talk", "/ptt"}
+_COMPRESS = {"/compress", "/compact"}
+
+# A dim line of key commands shown at the prompt each turn.
+_PROMPT_HINTS = "/help · /compress · /mode · /talk · /exit"
 
 _HELP = """\
 Commands:
   /help                 show this help
+  /compress (/compact)  compact the conversation now to free up context space
   /talk (or /ptt)       push-to-talk: speak your next message, Enter to stop
   /mic                  cycle mic mode (Open Mic / Push to Talk / Muted)
   /mode plan|auto|dangerous   switch permission mode for the rest of the session
@@ -97,6 +102,8 @@ def run_chat(opts: GlobalOptions) -> int:
         instructions = InstructionQueue(bus)
         steer = SteerSession(instructions, echo=typer.echo)
         prompter = PausingQueuePrompter(instructions, TerminalPrompter(), steer.prompt_active)
+        # ask_user reads a line from the terminal, pausing the steering reader.
+        asker = make_console_asker(steer.prompt_active)
         try:
             runtime = assemble_runtime(
                 config=config,
@@ -108,6 +115,7 @@ def run_chat(opts: GlobalOptions) -> int:
                 effort=effort,
                 instructions=instructions,
                 bus=bus,
+                asker=asker,
             )
         except MissingAPIKeyError as exc:
             typer.echo(str(exc), err=True)
@@ -257,6 +265,7 @@ async def chat_loop(
     """
     waiter = stop_waiter or _wait_for_enter
     while True:
+        _print_command_hints(echo)
         try:
             if key_reader is not None:
                 intent = await asyncio.to_thread(key_reader, _you_prompt())
@@ -289,6 +298,9 @@ async def chat_loop(
             continue
         if message == "/mic":
             _handle_mic(mic, echo)
+            continue
+        if message in _COMPRESS:
+            _handle_compress(runtime, echo)
             continue
         if message.startswith("/mode"):
             _handle_mode(runtime, message, echo)
@@ -333,6 +345,21 @@ def _handle_mic(mic: MicController | None, echo: Callable[[str], None]) -> None:
         return
     mic.cycle_mode()
     echo(typer.style(mic.mic_bar(), dim=True))
+
+
+def _handle_compress(runtime: AgentRuntime, echo: Callable[[str], None]) -> None:
+    """Manually compact the conversation context to free up space (/compress)."""
+    before = runtime.context.estimated_chars()
+    if runtime.context.compact(runtime.state, force=True):
+        after = runtime.context.estimated_chars()
+        echo(typer.style(f"  context compressed: ~{before:,} → ~{after:,} chars", fg=typer.colors.GREEN))
+    else:
+        echo(typer.style("  nothing to compress yet — the conversation is still small.", dim=True))
+
+
+def _print_command_hints(echo: Callable[[str], None]) -> None:
+    """A dim, one-line reminder of key commands, shown at the prompt each turn."""
+    echo(typer.style("  " + _PROMPT_HINTS, dim=True))
 
 
 def _you_prompt() -> str:

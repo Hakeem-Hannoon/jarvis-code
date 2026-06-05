@@ -68,6 +68,22 @@ def test_permission_phrase_drops_command_arguments() -> None:
     assert "TOKEN" not in phrase  # only the program name is spoken
 
 
+def test_speakable_strips_symbol_names_keeps_words() -> None:
+    assert vmsg.speakable("src/cli/app.py") == "src cli app.py"  # no "slash"
+    assert vmsg.speakable("**done** now") == "done now"          # no "asterisk"
+    assert vmsg.speakable("test_helper|x") == "test helper x"    # no underscore/pipe
+    assert vmsg.speakable("Reading the file.") == "Reading the file."  # prose kept
+
+
+def test_spoken_text_has_no_symbol_names() -> None:
+    # The redaction marker must never be voiced as "asterisk asterisk asterisk".
+    jlog.register_secret("sk-spoken-9999999999")
+    out = vmsg.shorten("deploying with sk-spoken-9999999999 now")
+    assert "*" not in out and "sk-spoken" not in out and "asterisk" not in out
+    # A path-y status loses its slashes when spoken.
+    assert "/" not in vmsg.shorten("touching src/cli/chat.py")
+
+
 def test_shorten_caps_and_redacts() -> None:
     jlog.register_secret("sk-leak-1234567890")
     out = vmsg.shorten("status with sk-leak-1234567890 inside", max_chars=160)
@@ -236,6 +252,15 @@ def test_subsystem_options_carry_voice_character() -> None:
     assert vs.options.robotic == 0.4
 
 
+def test_speech_rate_default_is_brisk_and_capped_at_3x() -> None:
+    from pydantic import ValidationError
+
+    assert VoiceConfig().speech_rate == 1.25  # brisk default
+    assert VoiceConfig(speech_rate=3.0).speech_rate == 3.0  # editable up to 3x
+    with pytest.raises(ValidationError):
+        VoiceConfig(speech_rate=3.5)  # beyond 3x is rejected
+
+
 def test_system_prompt_narration_gated_on_opt_in() -> None:
     from jarvis_code.agent.prompts import build_system_prompt
     from jarvis_code.permissions import PermissionMode
@@ -314,14 +339,39 @@ async def test_reporter_speaks_model_intent_once_when_opted_in() -> None:
 
     reporter.assistant_text("I'll install the project dependencies so the tests run.")
     reporter.tool_started("run_shell", "pip install -e .")  # speaks the intent
-    reporter.tool_started("read_file", "/proj/x.py")  # file op -> names the file
+    reporter.tool_started("read_file", "/proj/x.py")  # same turn -> stays quiet
     await vs.drain()
     await vs.aclose()
 
-    assert engine.spoken[0] == "I'll install the project dependencies so the tests run"
-    assert engine.spoken[1] == "Accessing x.py."
+    # Exactly ONE line per turn: the reason, and nothing for the second tool.
+    assert engine.spoken == ["I'll install the project dependencies so the tests run"]
     # The raw command arguments were never voiced.
     assert all("pip install -e ." not in s for s in engine.spoken)
+
+
+@pytest.mark.asyncio
+async def test_reporter_speaks_once_per_turn_not_per_tool() -> None:
+    # "Talking too much" fix: a batch of tool calls in one model turn yields one
+    # spoken line (the reason), not one per tool. A new turn speaks again.
+    engine = FakeEngine()
+    vs = VoiceSubsystem(engine, VoiceConfig(speak_intent=True))
+    await vs.start()
+    reporter = VoiceReporter(vs)
+
+    reporter.assistant_text("Refactoring the parser to handle nested calls.")
+    for name, summary in [("read_file", "a.py"), ("edit_file", "b.py"), ("write_file", "c.py")]:
+        reporter.tool_started(name, summary)
+
+    reporter.assistant_text("Now wiring the new function into the loader.")
+    reporter.tool_started("edit_file", "loader.py")
+    reporter.tool_started("write_file", "loader.py")
+    await vs.drain()
+    await vs.aclose()
+
+    assert engine.spoken == [
+        "Refactoring the parser to handle nested calls",
+        "Now wiring the new function into the loader",
+    ]
 
 
 @pytest.mark.asyncio

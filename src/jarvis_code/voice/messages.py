@@ -9,7 +9,29 @@ secret redactor.
 
 from __future__ import annotations
 
+import re
+
 from jarvis_code.utils.logging import redact
+
+# Symbols a TTS engine would otherwise read aloud BY NAME ("asterisk", "slash",
+# "underscore", "backtick"…). Stripped from spoken text so only words are voiced.
+# Ordinary sentence punctuation (. , ! ? ' : ; -) is kept for natural prosody.
+_SPOKEN_SYMBOLS = re.compile(r"""[*_`~#|<>{}()\[\]$%^&=+@\\/"]+""")
+
+
+def speakable(text: str) -> str:
+    """Reduce a status string to spoken words.
+
+    A path like ``src/app.py`` would otherwise be read "src slash app…" and
+    ``**done**`` as "asterisk asterisk done"; the redaction marker ``***REDACTED***``
+    as "asterisk asterisk asterisk…". This replaces those symbols with spaces so
+    only words and sentence punctuation are spoken. Voice-only — console output
+    and transcripts keep their symbols.
+    """
+    if not text:
+        return text
+    text = _SPOKEN_SYMBOLS.sub(" ", text).replace("…", " ")
+    return re.sub(r"\s+", " ", text).strip()
 
 # Curated, fixed phrases. Keyed by an internal status event.
 # Cinematic, calm-assistant tone (think a certain Iron Man AI). Still short,
@@ -126,8 +148,6 @@ def clean_intent(
     None when nothing speakable remains. This is the one place model-authored
     words may be voiced; raw output, file contents, and secrets never are.
     """
-    import re
-
     stripped = (text or "").strip()
     if not stripped:
         return None
@@ -169,9 +189,12 @@ def swarm_phrase(phrase: str) -> str:
 
 
 def shorten(text: str, max_chars: int = 160) -> str:
-    """Cap length at a word boundary and scrub any registered secret."""
-    text = redact(text).strip()
+    """Scrub secrets, reduce to spoken words, and cap length at a word boundary.
+
+    The single chokepoint for everything the voice engine speaks: redact →
+    speakable (no symbol names) → length cap.
+    """
+    text = speakable(redact(text))
     if len(text) <= max_chars:
         return text
-    clipped = text[:max_chars].rsplit(" ", 1)[0]
-    return clipped + "…"
+    return text[:max_chars].rsplit(" ", 1)[0]

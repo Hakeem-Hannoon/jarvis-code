@@ -277,6 +277,16 @@ def test_compaction_noop_when_small() -> None:
     assert ctx.compact(RunState(goal="g")) is False
 
 
+def test_compact_force_compacts_even_under_budget() -> None:
+    # /compress forces compaction regardless of size (but still needs >keep_recent).
+    ctx = ConversationContext("SYSTEM", max_chars=10**9, keep_recent=2)
+    for i in range(6):
+        ctx.add_user(f"message {i}")
+    assert ctx.compact(RunState(goal="g")) is False              # not over budget
+    assert ctx.compact(RunState(goal="g"), force=True) is True   # forced
+    assert len(ctx.messages) == 3                                 # summary + 2 recent
+
+
 # -- step limit: unlimited by default, still cappable -----------------------
 
 

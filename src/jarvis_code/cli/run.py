@@ -16,6 +16,7 @@ from jarvis_code.sandbox import Sandbox, SandboxRootError, resolve_sandbox_root
 from jarvis_code.voice import VoiceReporter, VoiceSubsystem, select_engine
 
 from .options import GlobalOptions
+from .steer import make_console_asker
 from .ui import CompositeReporter, ConsoleReporter, print_finish_summary
 
 _DANGEROUS_WARNING = (
@@ -78,6 +79,7 @@ def run_task(opts: GlobalOptions, task: str) -> int:
             prompter=TerminalPrompter(),
             reporter=reporter,
             effort=effort,
+            asker=make_console_asker(),  # ask_user can clarify when stdin is a TTY
         )
         try:
             return await runtime.run(task)

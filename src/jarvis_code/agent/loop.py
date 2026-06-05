@@ -115,6 +115,7 @@ class AgentRuntime:
 
     async def run(self, user_request: str) -> RunResult:
         self.state.goal = user_request
+        self.executor.ctx.questions_asked = 0  # fresh clarification budget per turn
         self.session.prompt(user_request)
         self.context.add_user(user_request)
         self.bus.emit(EventType.USER_TEXT_INPUT, text=user_request)
@@ -253,19 +254,23 @@ def assemble_runtime(
     bus: EventBus | None = None,
     effort: Effort = Effort.MEDIUM,
     max_steps: object = _UNSET_STEPS,
+    asker: object | None = None,
 ) -> AgentRuntime:
     """Wire up a runtime. ``provider`` may be injected (tests); else built from config.
 
     ``effort`` tunes step ceiling, response token budget, sub-agent availability,
     and a system-prompt reasoning nudge. An explicit ``max_steps`` overrides the
-    effort profile's ceiling.
+    effort profile's ceiling. ``asker`` (a ``str -> str | None`` callable) enables
+    the ``ask_user`` clarification tool when an interactive user is present.
     """
     profile = profile_for(effort)
     steps = profile.max_steps if max_steps is _UNSET_STEPS else max_steps  # type: ignore[assignment]
 
     bus = bus if bus is not None else EventBus()
     instructions = instructions if instructions is not None else InstructionQueue(bus)
-    registry = build_default_registry(include_subagents=profile.use_subagents)
+    registry = build_default_registry(
+        include_subagents=profile.use_subagents, include_ask=asker is not None
+    )
     permissions = PermissionManager(mode, prompter=prompter)
     if provider is None:
         provider = build_provider(config, http_client=http_client, max_tokens=profile.max_tokens)
@@ -281,6 +286,7 @@ def assemble_runtime(
         effort_note=profile.guidance,
         # In-character spoken narration only when voice output + intent are on.
         narrate=config.voice.enabled and config.voice.speak_intent,
+        can_ask=asker is not None,
     )
     context = ConversationContext(system_prompt)
     state = RunState()
@@ -297,7 +303,7 @@ def assemble_runtime(
         parent_session=session,
         parent_state=state,
     )
-    tool_ctx = ToolContext(sandbox=sandbox, orchestrator=orchestrator)
+    tool_ctx = ToolContext(sandbox=sandbox, orchestrator=orchestrator, asker=asker)
     executor = ToolExecutor(registry, permissions, tool_ctx)
     return AgentRuntime(
         provider=provider,

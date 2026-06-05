@@ -55,6 +55,7 @@ def build_system_prompt(
     role: str | None = None,
     effort_note: str | None = None,
     narrate: bool = False,
+    can_ask: bool = False,
 ) -> str:
     tool_lines = "\n".join(f"  - {t['name']}: {t['description']}" for t in tool_specs)
     identity = role or "You are jarvis, a careful, local, sandboxed coding agent."
@@ -67,6 +68,15 @@ def build_system_prompt(
         sections.append(effort_note)
     if narrate:
         sections.append(_VOICE_NARRATION)
+    if can_ask:
+        sections.append(
+            "ASKING THE USER: you have an `ask_user` tool. Default to acting on a "
+            "reasonable assumption and stating it. Use `ask_user` ONLY when truly "
+            "blocked by an ambiguity you cannot resolve by reading the code and "
+            "where guessing wrong would waste real work. Prefer zero questions; "
+            "never ask to confirm a sensible default or something you can check "
+            "yourself."
+        )
     sections += [
         f"SANDBOX ROOT: {sandbox_root}\nAll paths are relative to this root.",
         "TOOLS available to you (call them; do not pretend):\n" + tool_lines,

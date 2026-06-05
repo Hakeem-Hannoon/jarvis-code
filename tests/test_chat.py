@@ -255,6 +255,28 @@ async def test_chat_key_reader_typed_line_still_runs_commands() -> None:
     assert rt.runs == []
 
 
+def test_handle_compress_forces_compaction() -> None:
+    from jarvis_code.agent import ConversationContext, RunState
+    from jarvis_code.cli.chat import _handle_compress
+
+    ctx = ConversationContext("sys", max_chars=10**9, keep_recent=2)
+    for i in range(6):
+        ctx.add_user(f"m{i}")
+    rt = SimpleNamespace(context=ctx, state=RunState(goal="g"))
+    out: list[str] = []
+    _handle_compress(rt, out.append)
+    assert len(ctx.messages) == 3  # compacted to summary + 2 recent
+    assert any("compressed" in o for o in out)
+
+
+@pytest.mark.asyncio
+async def test_chat_command_hints_shown_each_turn() -> None:
+    out: list[str] = []
+    rt = FakeRuntime()
+    await chat_loop(rt, prompt_fn=_prompt_from(["/exit"]), echo=out.append)
+    assert any("/compress" in o for o in out)  # key commands shown at the prompt
+
+
 @pytest.mark.asyncio
 async def test_chat_mic_command_cycles_mode() -> None:
     out: list[str] = []

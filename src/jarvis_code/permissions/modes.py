@@ -27,6 +27,7 @@ class Capability(str, Enum):
     MOVE = "move"
     SHELL = "shell"
     SUBAGENT = "subagent"
+    ASK = "ask"
 
 
 class Decision(str, Enum):
@@ -48,8 +49,9 @@ def decide(mode: PermissionMode, capability: Capability) -> Decision:
         # and catastrophic shell patterns are still screened out elsewhere.
         return Decision.ALLOW
 
-    if capability in _READ_ONLY or capability == Capability.SUBAGENT:
-        # Sub-agents inherit the parent mode, so spawning never escalates.
+    if capability in _READ_ONLY or capability in (Capability.SUBAGENT, Capability.ASK):
+        # Sub-agents inherit the parent mode, so spawning never escalates. Asking
+        # the user a question mutates nothing, so it is allowed in every mode.
         return Decision.ALLOW
 
     if mode == PermissionMode.PLAN:

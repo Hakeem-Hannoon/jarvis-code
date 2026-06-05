@@ -46,11 +46,16 @@ def test_registry_gates_subagents() -> None:
     assert "spawn_subagent" not in build_default_registry(include_subagents=False)
 
 
+def test_registry_gates_ask() -> None:
+    assert "ask_user" in build_default_registry()  # default: available
+    assert "ask_user" not in build_default_registry(include_ask=False)
+
+
 def test_registry_has_full_tool_set(registry) -> None:
     expected = {
         "list_files", "read_file", "write_file", "edit_file", "delete_file",
         "search_files", "grep_text", "run_shell", "git_diff", "git_status",
-        "create_directory", "move_file", "spawn_subagent",
+        "create_directory", "move_file", "spawn_subagent", "ask_user",
     }
     assert set(registry.names()) == expected
 
@@ -148,6 +153,33 @@ def test_delete_file_subdir_dotdot_cannot_wipe_root(registry, ctx, project: Path
     res = run(registry, ctx, "delete_file", path="src/..")
     assert not res.ok
     assert (project / "src").exists() and (project / "README.md").exists()
+
+
+# -- ask_user (clarification, with guardrails) ------------------------------
+
+
+def test_ask_user_returns_the_answer(project: Path) -> None:
+    ctx = ToolContext(sandbox=Sandbox(project), asker=lambda q: "use postgres")
+    res = run(build_default_registry(), ctx, "ask_user", question="which database?")
+    assert res.ok and res.output == "use postgres" and res.metadata["answered"] is True
+
+
+def test_ask_user_degrades_without_an_interactive_user(registry, ctx) -> None:
+    # The default ctx has asker=None (non-interactive) -> proceed, don't stall.
+    res = run(registry, ctx, "ask_user", question="which database?")
+    assert res.ok and res.metadata["answered"] is False
+    assert "assumption" in res.output.lower()
+
+
+def test_ask_user_is_capped_per_turn(project: Path) -> None:
+    from jarvis_code.tools.ask_tool import AskUserTool
+
+    ctx = ToolContext(sandbox=Sandbox(project), asker=lambda q: "yes", max_questions=2)
+    tool = AskUserTool()
+    assert tool.run(ctx, {"question": "a"}).metadata["answered"] is True
+    assert tool.run(ctx, {"question": "b"}).metadata["answered"] is True
+    capped = tool.run(ctx, {"question": "c"})  # third exceeds the budget
+    assert capped.metadata["answered"] is False and "enough" in capped.output.lower()
 
 
 # -- search tools -----------------------------------------------------------

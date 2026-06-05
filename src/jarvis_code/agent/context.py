@@ -71,9 +71,14 @@ class ConversationContext:
     def needs_compaction(self) -> bool:
         return self.estimated_chars() > self.max_chars
 
-    def compact(self, state: RunState) -> bool:
-        """Collapse old messages into a preservation summary. Returns True if done."""
-        if not self.needs_compaction():
+    def compact(self, state: RunState, *, force: bool = False) -> bool:
+        """Collapse old messages into a preservation summary. Returns True if done.
+
+        Auto-compaction passes ``force=False`` (only when over budget); the
+        ``/compress`` command passes ``force=True`` to compact on demand. Either
+        way there must be more than ``keep_recent`` messages to collapse.
+        """
+        if not force and not self.needs_compaction():
             return False
         if len(self.messages) <= self.keep_recent:
             return False

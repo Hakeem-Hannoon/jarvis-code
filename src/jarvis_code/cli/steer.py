@@ -18,11 +18,48 @@ import threading
 import time
 from collections.abc import Callable
 
+import typer
+
 from jarvis_code.events import InstructionKind, InstructionQueue
 from jarvis_code.events.prompter import map_text_to_response
 from jarvis_code.permissions import PermissionRequest, PermissionResponse, Prompter
 
 _EOF = ""  # what a reader returns at end-of-input
+
+
+def make_console_asker(
+    prompt_active: threading.Event | None = None,
+    *,
+    input_fn: Callable[[str], str] = input,
+) -> Callable[[str], str | None]:
+    """An ``ask_user`` backend: show a question, read one line, return it.
+
+    When ``prompt_active`` (a steering reader's flag) is given, the reader stands
+    down while we own stdin. Returns ``None`` off a non-interactive terminal so
+    the tool degrades to "proceed with best judgment" instead of stalling.
+    """
+
+    def ask(question: str) -> str | None:
+        try:
+            if not sys.stdin.isatty():
+                return None
+        except (ValueError, OSError):  # pragma: no cover - unusual stdio
+            return None
+        if prompt_active is not None:
+            prompt_active.set()
+        try:
+            typer.echo("")
+            typer.echo(typer.style(f"  ❓ {question}", fg=typer.colors.CYAN, bold=True))
+            try:
+                answer = input_fn(typer.style("  your answer ❯ ", fg=typer.colors.CYAN))
+            except (EOFError, KeyboardInterrupt):
+                return None
+            return (answer or "").strip() or None
+        finally:
+            if prompt_active is not None:
+                prompt_active.clear()
+
+    return ask
 
 
 def _default_readline(timeout: float = 0.1) -> str | None:  # pragma: no cover - needs a tty

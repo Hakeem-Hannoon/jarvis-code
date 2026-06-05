@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .ask_tool import AskUserTool
 from .base import Tool, ToolContext, ToolResult
 from .executor import ExecutionResult, ToolExecutor
 from .fs_tools import (
@@ -33,18 +34,24 @@ _DEFAULT_TOOLS = [
     CreateDirectoryTool,
     MoveFileTool,
     SpawnSubagentTool,
+    AskUserTool,
 ]
 
 
-def build_default_registry(*, include_subagents: bool = True) -> ToolRegistry:
+def build_default_registry(
+    *, include_subagents: bool = True, include_ask: bool = True
+) -> ToolRegistry:
     """Construct a registry with the documented tool set.
 
     ``include_subagents=False`` omits spawn_subagent so the model can't delegate
-    (sub-agents are unlocked only at ``madmax`` effort).
+    (sub-agents are unlocked only at ``madmax`` effort). ``include_ask=False``
+    omits ask_user when there is no interactive user to answer.
     """
     registry = ToolRegistry()
     for tool_cls in _DEFAULT_TOOLS:
         if tool_cls is SpawnSubagentTool and not include_subagents:
+            continue
+        if tool_cls is AskUserTool and not include_ask:
             continue
         registry.register(tool_cls())
     return registry

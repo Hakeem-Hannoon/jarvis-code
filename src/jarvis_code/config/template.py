@@ -61,8 +61,12 @@ default_voice = "jarvis-inspired"   # maps to a British male `say` voice (Daniel
 model_path = ""
 config_path = ""
 fallback_engine = "system"
-speech_rate = 1.0
+speech_rate = 1.25              # spoken pace ×default; brisk by default, up to 3.0
 volume = 0.9
+# pitch/robotic shape the voice character (macOS `say`): pitch 1.0 = natural,
+# lower = deeper; robotic 0 = natural intonation, up to 1 = flat/synthetic.
+pitch = 1.0
+robotic = 0.0
 announce_subagents = true
 announce_permissions = true
 # speak_intent: when true, spoken status may include a short, model-written

@@ -9,6 +9,7 @@ permission manager does that before a tool runs. Each tool declares the
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from jarvis_code.permissions.modes import Capability
@@ -25,6 +26,12 @@ class ToolContext:
     # Hard cap on captured output to keep context/transcripts bounded.
     max_output_chars: int = 20_000
     shell_timeout: float = 120.0
+    # Ask the user a free-form question (interactive sessions only); None means
+    # no interactive user. ``max_questions`` bounds asks per turn so the agent
+    # can't over-ask; the runtime resets ``questions_asked`` at the start of each.
+    asker: Callable[[str], str | None] | None = None
+    max_questions: int = 3
+    questions_asked: int = 0
 
 
 @dataclass

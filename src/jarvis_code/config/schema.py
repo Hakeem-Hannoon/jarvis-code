@@ -102,7 +102,9 @@ class VoiceConfig(BaseModel):
     model_path: str = ""
     config_path: str = ""
     fallback_engine: VoiceEngineName = VoiceEngineName.SYSTEM
-    speech_rate: float = Field(default=1.0, gt=0)
+    # Spoken pace as a multiple of the engine's default (~175 wpm). 1.25 is a
+    # brisk default; editable up to 3.0 (anything higher is rejected).
+    speech_rate: float = Field(default=1.25, gt=0, le=3)
     volume: float = Field(default=0.9, ge=0, le=1)
     # Voice character (macOS `say` path). 1.0 = the voice's natural pitch; lower
     # is deeper/more synthetic. ``robotic`` flattens intonation toward a monotone

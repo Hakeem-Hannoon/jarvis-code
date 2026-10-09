@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .context import ConversationContext
+from .controls import ProviderInfo, SessionControls, SessionSettings, split_model_spec
 from .loop import AgentRuntime, RunResult, RunStatus, assemble_runtime
 from .memory import (
     MEMORY_CANDIDATES,
@@ -15,6 +16,10 @@ from .state import RunState
 
 __all__ = [
     "ConversationContext",
+    "ProviderInfo",
+    "SessionControls",
+    "SessionSettings",
+    "split_model_spec",
     "AgentRuntime",
     "RunResult",
     "RunStatus",

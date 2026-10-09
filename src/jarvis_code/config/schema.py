@@ -48,6 +48,9 @@ class ProviderConfig(BaseModel):
 
     api_key: SecretStr | None = None
     model: str
+    # Optional favourites offered by the /model picker and tab completion, in
+    # addition to ``model`` (the default) and whatever the provider's API lists.
+    models: list[str] = Field(default_factory=list)
     endpoint: str | None = None
     api_version: str | None = None
     project: str | None = None

@@ -1039,3 +1039,85 @@ def test_retries_give_up_eventually() -> None:
     with pytest.raises(ProviderError):
         provider.complete([Message.user("hi")])
     assert len(seen) == 4
+
+
+# -- what the UI is told ------------------------------------------------------
+
+
+class _RecordingReporter:
+    def __init__(self) -> None:
+        self.finished: list[tuple[str, bool, str]] = []
+        self.actions: list[str] = []
+        self.outputs: list[str] = []
+
+    def assistant_text(self, text): ...
+    def tool_started(self, name, summary): ...
+    def action(self, request):
+        self.actions.append(request.tool_name)
+
+    def tool_finished(self, name, ok, detail):
+        self.finished.append((name, ok, detail))
+
+    def tool_output(self, name, output, ok):
+        self.outputs.append(output)
+
+    def permission(self, tool, outcome, reason): ...
+    def info(self, text): ...
+
+
+async def test_tool_results_are_described_usefully(sandbox: Sandbox) -> None:
+    reporter = _RecordingReporter()
+    provider = ScriptedProvider(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall("1", "read_file", {"path": "a.txt"}),
+                    ToolCall("2", "list_files", {}),
+                    ToolCall("3", "grep_text", {"pattern": "zzz"}),
+                    ToolCall("4", "write_file", {"path": "n.txt", "content": "x\ny\n"}),
+                    ToolCall("5", "run_shell", {"command": "echo hi"}),
+                ],
+                usage={"input_tokens": 1200, "output_tokens": 80},
+            ),
+            ModelResponse(text="done", usage={"prompt_tokens": 300, "completion_tokens": 20}),
+        ]
+    )
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.DANGEROUS,
+        provider=provider, reporter=reporter,
+    )
+    result = await runtime.run("look around")
+    details = {name: detail for name, _ok, detail in reporter.finished}
+    assert details == {
+        "read_file": "2 lines",      # not "12 chars"
+        "list_files": "2 entries",   # a.txt + the .jarvis/ session dir
+        "grep_text": "no matches",
+        "write_file": "+2 -0 lines",
+        "run_shell": "exit 0",
+    }
+    assert reporter.outputs == ["hi\n"]  # the command's output reaches the UI
+    # Token usage is normalized across provider naming schemes and summed.
+    assert (result.tokens_in, result.tokens_out) == (1500, 100)
+    assert result.files_changed == ("n.txt",) and result.seconds > 0
+
+
+async def test_approval_prompt_is_the_only_place_a_pending_action_is_shown(
+    sandbox: Sandbox,
+) -> None:
+    from jarvis_code.permissions import DenyPrompter
+
+    reporter = _RecordingReporter()
+    provider = ScriptedProvider(
+        [
+            ModelResponse(tool_calls=[ToolCall("1", "write_file", {"path": "n.txt", "content": "x"})]),
+            ModelResponse(text="ok"),
+        ]
+    )
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.AUTO,
+        provider=provider, reporter=reporter, prompter=DenyPrompter(),
+    )
+    await runtime.run("write")
+    # In auto mode the prompter presents the diff; the reporter must not print
+    # it a second time (it used to appear twice, back to back).
+    assert reporter.actions == []

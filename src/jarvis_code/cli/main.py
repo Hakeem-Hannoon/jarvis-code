@@ -36,9 +36,19 @@ from .voices import voices_list, voices_test
 app = typer.Typer(
     name="jarvis",
     help=(
-        "jarvis — a local, sandboxed coding agent. The agent operates only "
+        "jarvis — a local, sandboxed coding agent. Run it bare for an interactive "
+        "chat, or pass a task in quotes to run it once. The agent operates only "
         "inside the sandbox root (the launch directory, or --sandbox <path>). "
         "The model proposes actions; the runtime enforces the rules."
+    ),
+    epilog=(
+        "Examples:\n\n"
+        "\b\n"
+        '  jarvis                                    start an interactive chat\n'
+        '  jarvis "fix the failing test"             run one task, then exit\n'
+        '  jarvis --mode plan "explain this repo"    read-only: look, don\'t touch\n'
+        '  jarvis --effort high --model <id> "..."   work harder / pick a model\n'
+        '  jarvis init && jarvis doctor              first-time setup + health check'
     ),
     add_completion=False,
 )

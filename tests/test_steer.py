@@ -114,3 +114,12 @@ def test_prompter_pauses_reader_then_asks_inner() -> None:
     resp = PausingQueuePrompter(q, _Inner(), flag).request_permission(_request())
     assert resp.choice is Choice.NO
     assert not flag.is_set()  # flag cleared afterwards so the reader resumes
+
+
+def test_steer_does_not_send_slash_commands_to_the_model() -> None:
+    out: list[str] = []
+    q = InstructionQueue()
+    s = SteerSession(q, echo=out.append, readline=_scripted(["/status"]))
+    s._pump_once()
+    assert len(q) == 0  # "/status" is not an instruction for the agent
+    assert any("works at the prompt" in o for o in out)

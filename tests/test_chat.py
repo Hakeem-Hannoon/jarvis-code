@@ -397,3 +397,70 @@ async def test_chat_handles_provider_error_and_continues() -> None:
     )
     assert rt.runs == ["still here"]  # survived the error, kept going
     assert any("provider boom" in o for o in out)
+
+
+# -- the first key typed at the voice prompt must never be lost ---------------
+
+
+class _FakeReadline:
+    """A readline whose pre-input hook either fires (GNU) or never does (libedit)."""
+
+    __doc__ = "fake"
+
+    def __init__(self, fires: bool) -> None:
+        self.fires = fires
+        self.buffer = ""
+        self.hook = None
+
+    def set_pre_input_hook(self, hook=None) -> None:
+        self.hook = hook
+
+    def insert_text(self, text: str) -> None:
+        self.buffer += text
+
+    def redisplay(self) -> None: ...
+
+    def get_line_buffer(self) -> str:
+        return self.buffer
+
+
+@pytest.mark.parametrize("hook_fires", [True, False])
+def test_first_key_survives_whether_or_not_the_readline_hook_fires(monkeypatch, hook_fires) -> None:
+    import sys
+
+    from jarvis_code.cli.keyinput import _input_with_prefix
+
+    fake = _FakeReadline(hook_fires)
+    monkeypatch.setitem(sys.modules, "readline", fake)
+
+    def editor(_prompt: str) -> str:
+        # A real line editor calls the hook (GNU readline) then returns its
+        # buffer plus what the user typed. libedit never calls it.
+        if fake.fires and fake.hook is not None:
+            fake.hook()
+        return fake.buffer + "ello"
+
+    # Typed "h" at the key prompt, then "ello": the message is "hello" either way.
+    # (On libedit the hook never ran, and the "h" used to be dropped: "ello".)
+    assert _input_with_prefix("you ❯ ", "h", editor) == "hello"
+    assert fake.hook is None  # the hook is always uninstalled afterwards
+
+
+def test_push_back_reports_failure_instead_of_raising(monkeypatch) -> None:
+    from jarvis_code.cli import keyinput
+
+    monkeypatch.setattr(keyinput, "_pushback_works", None)
+    assert keyinput._push_back(-1, b"h") is False  # bad fd -> OSError -> False
+    assert keyinput._pushback_works is False  # remembered: not retried per key
+
+
+def test_key_strategy_defaults_and_override(monkeypatch) -> None:
+    from jarvis_code.cli import keyinput
+
+    monkeypatch.delenv("JARVIS_KEY_PUSHBACK", raising=False)
+    monkeypatch.setattr(keyinput, "_is_libedit", lambda: True)
+    assert keyinput._strategy() == "pushback"  # macOS libedit: the hook never fires
+    monkeypatch.setattr(keyinput, "_is_libedit", lambda: False)
+    assert keyinput._strategy() == "hook"
+    monkeypatch.setenv("JARVIS_KEY_PUSHBACK", "prefix")
+    assert keyinput._strategy() == "prefix"

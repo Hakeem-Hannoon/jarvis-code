@@ -206,13 +206,36 @@ class ConsoleReporter:
 
     # -- reporter hooks ----------------------------------------------------
 
-    def thinking(self, active: bool) -> None:
+    def _spin(self, label: str | None) -> None:
+        """Show the spinner with ``label``, or hide it (``None``)."""
         if self._spinner is None:
             return
-        if active:
-            self._spinner.start()
-        else:
+        if label is None:
             self._spinner.stop()
+        else:
+            self._spinner.label = label
+            self._spinner.start()
+
+    def thinking(self, active: bool) -> None:
+        self._spin("thinking" if active else None)
+
+    def tool_running(self, name: str) -> None:
+        """A (possibly long) tool was authorized and is now executing."""
+        if name == "run_shell":
+            self._spin("running")
+        elif name == "spawn_subagent":
+            self._spin("sub-agent working")
+
+    def quiet(self) -> None:
+        """Hide the spinner because something else needs the terminal now."""
+        self._flush_pending()
+        self._spin(None)
+
+    def turn_finished(self) -> None:
+        """The turn is over (normally or by Ctrl-C): leave the terminal tidy."""
+        self._spin(None)
+        self._pending = None
+        self._denied = False
 
     def assistant_text(self, text: str) -> None:
         text = text.strip()
@@ -268,11 +291,13 @@ class ConsoleReporter:
 
     def tool_output(self, name: str, output: str, ok: bool) -> None:
         """Echo an excerpt of a command's output so the user can see what it did."""
+        self._spin(None)
         bar = _dim("  │")
         for line in output_excerpt(output):
             self.say(f"{bar} " + _dim(line))
 
     def tool_finished(self, name: str, ok: bool, detail: str) -> None:
+        self._spin(None)
         if self._denied:
             self._denied = False  # `permission` already said why
             self._pending = None
@@ -350,6 +375,12 @@ class CompositeReporter:
     def tool_output(self, name: str, output: str, ok: bool) -> None:
         self._each("tool_output", name, output, ok)
 
+    def tool_running(self, name: str) -> None:
+        self._each("tool_running", name)
+
+    def turn_finished(self) -> None:
+        self._each("turn_finished")
+
 
 # -- end-of-turn summaries ----------------------------------------------------
 
@@ -394,6 +425,8 @@ def print_turn_footer(result: RunResult, echo: Echo = typer.echo) -> None:
         first, *rest = message.splitlines() or [""]
         if result.status is RunStatus.ABORTED:
             first = first.replace("Stopped at user request.", "").strip()
+            if first in ("Interrupted.", "stop", "stop."):
+                first = ""  # "stopped — Interrupted." says the same thing twice
         head = f"  {mark} {label}" + (f" — {first}" if first else "")
         echo(typer.style(head, fg=color, bold=True))
         for line in rest:

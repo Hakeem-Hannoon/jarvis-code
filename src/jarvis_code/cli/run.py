@@ -71,12 +71,13 @@ def run_task(opts: GlobalOptions, task: str) -> int:
         typer.echo(typer.style(" · ".join(parts), dim=True))
 
     async def _go():
-        reporter = ConsoleReporter()
+        console = ConsoleReporter()
+        reporter = console
         voice_sub: VoiceSubsystem | None = None
         if voice_on:
             voice_sub = VoiceSubsystem(select_engine(config.voice), config.voice)
             await voice_sub.start()
-            reporter = CompositeReporter([ConsoleReporter(), VoiceReporter(voice_sub)])
+            reporter = CompositeReporter([console, VoiceReporter(voice_sub)])
         try:
             runtime = assemble_runtime(
                 config=config,
@@ -85,7 +86,7 @@ def run_task(opts: GlobalOptions, task: str) -> int:
                 provider=None,
                 provider_name=opts.provider,  # --provider / --model overrides
                 model=opts.model,
-                prompter=ConsolePrompter(),
+                prompter=ConsolePrompter(before_prompt=console.quiet),
                 reporter=reporter,
                 effort=effort,
                 asker=make_console_asker(),  # ask_user can clarify when stdin is a TTY

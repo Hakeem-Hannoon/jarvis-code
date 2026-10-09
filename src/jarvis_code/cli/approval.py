@@ -91,7 +91,21 @@ def approval_lines(request: PermissionRequest) -> list[str]:
 
 
 class ConsolePrompter(TerminalPrompter):
-    """`TerminalPrompter` with the CLI's panel styling for the request body."""
+    """`TerminalPrompter` with the CLI's panel styling for the request body.
+
+    ``before_prompt`` runs just before the panel is drawn; the CLI uses it to
+    stop the spinner (a sub-agent can ask for approval while the parent's
+    "working…" spinner is still animating on the same terminal).
+    """
+
+    def __init__(self, *args, before_prompt=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._before_prompt = before_prompt
 
     def body_lines(self, request: PermissionRequest) -> list[str]:
         return approval_lines(request)
+
+    def request_permission(self, request: PermissionRequest):
+        if self._before_prompt is not None:
+            self._before_prompt()
+        return super().request_permission(request)

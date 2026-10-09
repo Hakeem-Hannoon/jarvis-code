@@ -13,6 +13,7 @@ place.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from jarvis_code.permissions import (
@@ -76,7 +77,11 @@ class ToolExecutor:
         *,
         rationale: str | None = None,
         request: PermissionRequest | None = None,
+        before_run: Callable[[], None] | None = None,
     ) -> ExecutionResult:
+        """Authorize, then run. ``before_run`` fires once the call is authorized
+        and about to execute (the UI uses it to show that a command is running).
+        """
         tool = self.registry.get(tool_name)
         if tool is None:
             return ExecutionResult(
@@ -99,6 +104,8 @@ class ToolExecutor:
         outcome = self.permissions.authorize(request)
 
         if outcome.kind == OutcomeKind.ALLOWED:
+            if before_run is not None:
+                before_run()
             return ExecutionResult(
                 tool_name, OutcomeKind.ALLOWED, result=self._run_tool(tool, args)
             )

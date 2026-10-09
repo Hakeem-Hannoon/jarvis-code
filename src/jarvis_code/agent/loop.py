@@ -217,11 +217,14 @@ class AgentRuntime:
         self.session.run_end("aborted", msg)
         return RunResult(RunStatus.ABORTED, msg, step, self.state)
 
-    def _thinking(self, active: bool) -> None:
-        # Optional hook: older/third-party reporters may not implement it.
-        hook = getattr(self.reporter, "thinking", None)
+    def _hook(self, name: str, *args: object) -> None:
+        """Call an optional reporter hook (older/third-party reporters lack them)."""
+        hook = getattr(self.reporter, name, None)
         if hook is not None:
-            hook(active)
+            hook(*args)
+
+    def _thinking(self, active: bool) -> None:
+        self._hook("thinking", active)
 
     async def _call_model(self, messages, tools):
         """Call the provider without blocking the loop — and without being stuck.
@@ -253,6 +256,7 @@ class AgentRuntime:
         finally:
             self.busy = False
             self.in_tool_section = False
+            self._hook("turn_finished")  # e.g. stop a spinner left by an interrupt
         result.seconds = time.monotonic() - started
         result.tokens_in, result.tokens_out = self._tokens
         result.files_changed = tuple(self.state.files_changed[files_before:])
@@ -416,7 +420,11 @@ class AgentRuntime:
                     if hook is not None:
                         hook(request)
             outcome = self.executor.execute(
-                tc.name, tc.arguments, rationale=response.text or None, request=request
+                tc.name,
+                tc.arguments,
+                rationale=response.text or None,
+                request=request,
+                before_run=lambda name=tc.name: self._hook("tool_running", name),
             )
             self.session.permission_decision(
                 tc.name, capability, outcome.outcome.value, outcome.reason

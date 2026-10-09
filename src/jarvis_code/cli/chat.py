@@ -15,20 +15,20 @@ from pathlib import Path
 
 import typer
 
+from jarvis_code import __version__
 from jarvis_code.agent import AgentRuntime, assemble_runtime
 from jarvis_code.agent.memory import save_project_memory
 from jarvis_code.config import ConfigError, Effort, load_config
 from jarvis_code.events import EventBus, InstructionQueue
 from jarvis_code.input import MicController, build_mic_controller
 from jarvis_code.models import ProviderError
-from jarvis_code import __version__
 from jarvis_code.permissions import PermissionMode
 from jarvis_code.sandbox import Sandbox, SandboxRootError, resolve_sandbox_root
 from jarvis_code.utils.threads import run_in_daemon_thread
 from jarvis_code.voice import VoiceReporter, VoiceSubsystem, select_engine
 
-from .interrupts import restore_terminal_state, route_sigint, save_terminal_state
 from .approval import ConsolePrompter
+from .interrupts import restore_terminal_state, route_sigint, save_terminal_state
 from .keyinput import IdleAction, IdleIntent, read_idle_intent, supports_raw_keys
 from .lineedit import colored_prompt, save_history, setup_line_editing
 from .options import GlobalOptions
@@ -158,15 +158,17 @@ def run_chat(opts: GlobalOptions) -> int:
             )
         except ConfigError as exc:  # missing key, unknown --provider, bad endpoint…
             typer.echo(str(exc), err=True)
+            if voice_sub is not None:
+                await voice_sub.aclose()
             return 1
 
         setup_line_editing()
-        if effort == Effort.MADMAX:
-            typer.echo(typer.style("  " + _MADMAX_HEADSUP, fg=typer.colors.YELLOW, bold=True))
         _print_banner(
             opts.mode, root, mic, voice_on=voice_on, engine_label=engine_label,
             effort=effort, model=_model_label(runtime),
         )
+        if effort == Effort.MADMAX:
+            typer.echo(typer.style("  " + _MADMAX_HEADSUP, fg=typer.colors.YELLOW, bold=True))
         # Tap-Space-to-talk only when the mic is on and we have a real TTY;
         # otherwise the chat stays a plain typed-line prompt.
         key_reader = None

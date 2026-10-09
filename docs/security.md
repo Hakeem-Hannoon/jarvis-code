@@ -25,8 +25,14 @@ whether you're asked before an action, not where it can reach.
 
 `run_shell` enforces a sandbox-confined working directory (the real guarantee)
 and screens a small, high-confidence set of catastrophic patterns in every mode
-(`rm -rf /`, fork bombs, `mkfs`, device writes, power control). Per the
-invariants we do **not** rely on string matching for containment.
+(`rm -rf /`, fork bombs, `mkfs`, device writes, power control). Screening looks
+at the *program being run*, so `grep -r shutdown .` is fine while `rm -Rf /`,
+`rm -r -f /` and `sh -c 'rm -rf ~'` are all caught. Per the invariants we do
+**not** rely on string matching for containment.
+
+Commands run with stdin attached to `/dev/null` (they cannot read your
+keystrokes) and in their own process group, so a timeout or Ctrl-C kills
+everything the command started.
 
 Preventing a shell from *reading* outside the root via absolute paths (e.g.
 `cat /etc/passwd`) requires OS-level sandboxing (containers / seccomp /
@@ -34,6 +40,27 @@ Preventing a shell from *reading* outside the root via absolute paths (e.g.
 confinement + `plan` forbidding shell + `auto` asking before every shell command
 (showing command, cwd, why, expected effect, risk) + full logging. The
 deterministic *fs tools* always enforce canonical in-root paths.
+
+## Approvals
+
+- **An approval is always given to a request you can see.** Text you typed (or
+  spoke) earlier may *decline or redirect* the next request — "no", or "use a
+  temp dir instead" — but it can never approve one. A stray `ok` typed while the
+  agent was working is discarded rather than pre-authorizing the next shell
+  command; the menu is shown and you answer it.
+- Everything in the approval block (command, cwd, reason, diff) is
+  model-controlled, so control characters are rendered visibly (`\x1b[2K`)
+  instead of being sent to the terminal, where they could hide part of a command.
+- With no interactive input available (stdin closed / piped), `auto` mode fails
+  closed: the request is denied.
+- `move_file` never overwrites an existing destination, and `edit_file` rejects
+  an empty `old_string` — you approve the change you were shown, nothing wider.
+
+## Interrupts
+
+Ctrl-C (or typing `stop`) ends the **current turn**, including a model call in
+flight and a running shell command (its whole process tree is killed). The chat
+session and its context survive; Ctrl-C at the idle prompt leaves the chat.
 
 ## Secrets
 

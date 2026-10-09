@@ -74,12 +74,24 @@ def test_steer_stands_down_while_prompt_active() -> None:
 # -- PausingQueuePrompter ---------------------------------------------------
 
 
-def test_prompter_uses_a_queued_answer() -> None:
+def test_prompter_never_approves_from_a_queued_yes() -> None:
     q = InstructionQueue()
-    q.submit("yes")  # classified as a permission response
-    # Inner would say NO if consulted — it must NOT be, since an answer is queued.
-    p = PausingQueuePrompter(q, DenyPrompter(), threading.Event())
-    assert p.request_permission(_request()).choice is Choice.YES
+    q.submit("yes")  # typed earlier — before any request existed
+    notes: list[str] = []
+    # The stale "yes" is dropped and the REAL prompt decides (here: deny).
+    p = PausingQueuePrompter(q, DenyPrompter(), threading.Event(), echo=notes.append)
+    assert p.request_permission(_request()).choice is Choice.NO
+    assert any("ignored an earlier" in n for n in notes)
+
+
+def test_steer_does_not_queue_a_bare_yes_or_no() -> None:
+    out: list[str] = []
+    q = InstructionQueue()
+    s = SteerSession(q, echo=out.append, readline=_scripted(["ok", "no"]))
+    s._pump_once()
+    s._pump_once()
+    assert len(q) == 0  # nothing queued to pre-answer a future approval prompt
+    assert any("nothing is waiting" in o for o in out)
 
 
 def test_prompter_queued_freeform_becomes_do_something_else() -> None:

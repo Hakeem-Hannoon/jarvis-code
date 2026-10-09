@@ -544,3 +544,39 @@ def test_a_crashing_subagent_is_reported_not_raised(sandbox: Sandbox) -> None:
     orch = SubAgentOrchestrator(provider=_Boom(), sandbox=sandbox, parent_mode=PermissionMode.PLAN)
     summary = orch.spawn("explorer", "look around")
     assert summary.startswith("[explorer]")  # an error summary, not an exception
+
+
+# -- approval prompt ---------------------------------------------------------
+
+
+def test_approval_prompt_shows_escape_sequences_instead_of_running_them() -> None:
+    from jarvis_code.permissions import Capability, PermissionRequest, render_request
+
+    # ESC[2K + CR would erase the line in a terminal, hiding `rm -rf build` so
+    # only the harmless-looking tail is visible when the user approves.
+    sneaky = "rm -rf build\x1b[2K\recho hello"
+    block = render_request(
+        PermissionRequest(
+            tool_name="run_shell", capability=Capability.SHELL, summary="x", command=sneaky
+        )
+    )
+    assert "\x1b" not in block and "\r" not in block  # nothing for the terminal to obey
+    assert "rm -rf build" in block and "\\x1b[2K" in block  # shown literally
+
+
+def test_typed_approval_fails_closed_when_stdin_is_closed() -> None:
+    from jarvis_code.permissions import (
+        Capability,
+        Choice,
+        PermissionRequest,
+        TerminalPrompter,
+    )
+
+    def no_input(_prompt: str) -> str:
+        raise EOFError
+
+    prompter = TerminalPrompter(input_fn=no_input, output_fn=lambda _s: None)
+    resp = prompter.request_permission(
+        PermissionRequest(tool_name="run_shell", capability=Capability.SHELL, summary="x")
+    )
+    assert resp.choice is Choice.NO  # used to crash with an EOFError traceback

@@ -1,10 +1,14 @@
-"""A prompter that lets live voice/text answer the SAME 1/2/3 permission menu.
+"""A prompter that lets queued live voice/text *decline or redirect* a prompt.
 
-When a permission prompt is active, the next queued instruction is interpreted
-first as a possible permission response: "yes"/"no" map to choices 1/2, and
-anything else becomes "Do Something Else" (3) with the spoken text as steering
-feedback. If nothing is queued, it defers to an inner prompter (the terminal
-menu). This is one permission path — not a parallel system.
+When a permission prompt comes up, an instruction already waiting in the queue
+may answer it — but only in the safe direction: "no" declines, and anything
+else becomes "Do Something Else" with the text as steering feedback.
+
+A queued "yes" is **never** treated as approval. It was typed (or spoken) before
+this request existed, so the user has not seen the command or diff they would be
+approving — `ok` typed as a passing acknowledgement must not pre-authorize the
+next shell command. Approval always comes from the inner prompter, which shows
+the request first. This is one permission path — not a parallel system.
 """
 
 from __future__ import annotations
@@ -32,6 +36,25 @@ def map_text_to_response(text: str) -> PermissionResponse:
     return PermissionResponse(choice=Choice.SOMETHING_ELSE, feedback=feedback)
 
 
+def response_from_queue(queue: InstructionQueue) -> tuple[PermissionResponse | None, int]:
+    """Answer a prompt from the queue if that is safe to do.
+
+    Returns ``(response, stale_approvals_dropped)``. ``response`` is ``None`` when
+    nothing queued can answer (ask the user for real). Queued approvals are
+    discarded — see the module docstring.
+    """
+    dropped = 0
+    while True:
+        instr = queue.pop_next()
+        if instr is None:
+            return None, dropped
+        response = map_text_to_response(instr.text)
+        if response.choice == Choice.YES:
+            dropped += 1  # stale: predates the request it would be approving
+            continue
+        return response, dropped
+
+
 class QueueAwarePrompter:
     """Routes a queued live instruction to the active prompt; else asks inner."""
 
@@ -40,10 +63,10 @@ class QueueAwarePrompter:
         self._inner = inner
 
     def request_permission(self, request: PermissionRequest) -> PermissionResponse:
-        instr = self._queue.pop_next()
-        if instr is not None:
-            return map_text_to_response(instr.text)
+        response, _dropped = response_from_queue(self._queue)
+        if response is not None:
+            return response
         if self._inner is not None:
             return self._inner.request_permission(request)
-        # Fail closed: no queued response and no interactive prompter.
+        # Fail closed: no usable queued response and no interactive prompter.
         return PermissionResponse(choice=Choice.NO)

@@ -101,7 +101,9 @@ def run_chat(opts: GlobalOptions) -> int:
         bus = EventBus()
         instructions = InstructionQueue(bus)
         steer = SteerSession(instructions, echo=typer.echo)
-        prompter = PausingQueuePrompter(instructions, TerminalPrompter(), steer.prompt_active)
+        prompter = PausingQueuePrompter(
+            instructions, TerminalPrompter(), steer.prompt_active, echo=typer.echo
+        )
         # ask_user reads a line from the terminal, pausing the steering reader.
         asker = make_console_asker(steer.prompt_active)
         try:

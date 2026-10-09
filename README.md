@@ -15,10 +15,11 @@ voice I/O. Installs a command called **`jarvis`**.
 This is a focused, open, hackable agent — not a replacement for a mature product.
 Know the trade-offs going in:
 
-- **Context compaction is prompt-only.** When the conversation gets long, jarvis
-  asks the model to *summarize* older turns. That's simple and transparent, but
-  lossier and less precise than purpose-built context management — long sessions
-  can drift or forget detail.
+- **Context compaction is blunt.** When the conversation gets long, older turns
+  are dropped and replaced by a deterministic summary of the facts jarvis
+  tracked (goal, files changed, commands run, errors, decisions). No model call
+  is involved, so it is predictable and free — but anything said in those turns
+  that wasn't tracked is gone. `/status` shows how full the context is.
 - **No native model "reasoning" control.** `--effort` is approximated with token
   budget + prompting (so it works on every provider); it does **not** drive a
   model's native thinking budget.
@@ -86,8 +87,15 @@ conversation where each line is a turn and context carries across turns.
 - **Talk to it.** Type **`/talk`**, speak, press Enter — your speech is
   transcribed **locally** and run as the next turn. (`install.sh` already set up
   the speech engine.)
-- **In-chat commands:** `/help` · `/talk` · `/mode plan|auto|dangerous` ·
-  `/sandbox` · `/exit` (or Ctrl-D).
+- **See what it's doing.** Replies render as Markdown; each tool is one line
+  with its result (`├─ reading src/app.py · 212 lines`); shell commands show
+  their output; a spinner runs while the model thinks; and every turn ends with
+  what it took: `✓ 4.1s · 3 steps · 2.4k in / 310 out tokens`.
+- **Steer or stop it mid-turn.** Type a line while it works to redirect it, or
+  press **Ctrl-C** to stop the current turn — the chat (and its context) stays
+  open. Ctrl-C at the idle prompt leaves.
+- **In-chat commands:** `/help` · `/status` · `/mode plan|auto|dangerous` ·
+  `/compress` · `/clear` · `/sandbox` · `/talk` · `/mic` · `/exit` (or Ctrl-D).
 
 Prefer a one-shot run instead of a chat?
 
@@ -97,7 +105,8 @@ jarvis --mode plan "explain how auth works in this project"
 ```
 
 The agent runs with **no step limit** by default, so it works a task through to
-completion — interrupt anytime with Ctrl-C.
+completion — interrupt anytime with Ctrl-C (a one-shot run still prints its
+summary and exits with status 130).
 
 ---
 
@@ -154,15 +163,20 @@ which it uses to revise its approach.
   and symlinks whose targets escape are all rejected and logged. Subprocesses
   run with a working directory confined to the root. **Even `dangerous` mode
   cannot escape the sandbox.**
+- **Approvals are for what you can see.** In `auto` mode nothing you typed
+  earlier can approve a later request — a stray `ok` is discarded and the menu
+  is shown. Approval text is sanitized so escape codes can't hide a command.
 - **Shell.** `run_shell` enforces a confined working directory and screens a
-  small set of catastrophic patterns (e.g. `rm -rf /`, fork bombs). Full process
+  small set of catastrophic patterns (e.g. `rm -rf /`, fork bombs). Commands get
+  no stdin and are killed as a whole process tree on timeout/Ctrl-C. Full process
   isolation (preventing a shell reading outside via absolute paths) needs
   OS-level sandboxing and is a documented deferral; until then `plan` forbids
   shell and `auto` asks before every command. See `docs/security.md`.
 - **Secrets.** API keys live in a git-ignored local config or env vars. They are
   used only as HTTP request headers and are **never** placed in the model
   context, URLs, logs, transcripts, or speech. A process-wide redactor scrubs
-  any registered key from logs and transcripts.
+  any registered key from logs and transcripts, and the agent's file tools
+  refuse to read or modify jarvis's own config files in any mode.
 - **Trust boundary.** The model proposes; the deterministic runtime enforces.
   Every model-produced path, command, and argument is treated as untrusted.
 

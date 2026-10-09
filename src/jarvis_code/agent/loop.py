@@ -176,6 +176,8 @@ class AgentRuntime:
         self._owns_interrupt = not shares_interrupt
         self.interrupt = interrupt if interrupt is not None else threading.Event()
         self._tokens = [0, 0]  # [input, output] tokens used by the current turn
+        #: Live switching of model/provider/effort/mode (set by assemble_runtime).
+        self.controls = None
         #: True while a turn is running (``run`` has not returned yet).
         self.busy = False
         #: True while tools run synchronously on the calling thread — the only
@@ -520,14 +522,15 @@ def assemble_runtime(
         session = SessionWriter(sandbox)
 
     memory = load_project_memory(sandbox)
+    # In-character spoken narration only when voice output + intent are on.
+    narrate = config.voice.enabled and config.voice.speak_intent
     system_prompt = build_system_prompt(
         mode=mode,
         sandbox_root=str(sandbox.root),
         tool_specs=registry.specs(),
         memory=memory,
         effort_note=profile.guidance,
-        # In-character spoken narration only when voice output + intent are on.
-        narrate=config.voice.enabled and config.voice.speak_intent,
+        narrate=narrate,
         can_ask=asker is not None,
     )
     context = ConversationContext(system_prompt)
@@ -549,7 +552,7 @@ def assemble_runtime(
     )
     tool_ctx = ToolContext(sandbox=sandbox, orchestrator=orchestrator, asker=asker)
     executor = ToolExecutor(registry, permissions, tool_ctx)
-    return AgentRuntime(
+    runtime = AgentRuntime(
         provider=provider,
         executor=executor,
         context=context,
@@ -561,3 +564,17 @@ def assemble_runtime(
         bus=bus,
         interrupt=interrupt,
     )
+    # Lazy import: controls imports from this package.
+    from .controls import SessionControls
+
+    runtime.controls = SessionControls(
+        runtime,
+        config=config,
+        provider_name=provider_name or config.default_provider,
+        effort=effort,
+        memory=memory,
+        narrate=narrate,
+        can_ask=asker is not None,
+        http_client=http_client,
+    )
+    return runtime

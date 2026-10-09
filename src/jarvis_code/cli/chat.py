@@ -16,7 +16,6 @@ from pathlib import Path
 import typer
 
 from jarvis_code.agent import AgentRuntime, assemble_runtime
-from jarvis_code.agent.loop import RunStatus
 from jarvis_code.agent.memory import save_project_memory
 from jarvis_code.config import ConfigError, Effort, load_config
 from jarvis_code.events import EventBus, InstructionQueue
@@ -49,28 +48,52 @@ _COMPRESS = {"/compress", "/compact"}
 # A dim line of key commands, shown once under the banner.
 _PROMPT_HINTS = "/help · /status · /compress · /mode · /talk · /exit"
 
-_HELP = """\
-Commands:
-  /help                 show this help
-  /status               mode, model, sandbox and how full the context is
-  /mode plan|auto|dangerous   switch permission mode for the rest of the session
-  /compress (/compact)  compact the conversation now to free up context space
-  /clear                forget the conversation so far and start fresh
-  /sandbox              show the current sandbox root
-  /talk (or /ptt)       push-to-talk: speak your next message, Enter to stop
-  /mic                  cycle mic mode (Open Mic / Push to Talk / Muted)
-  /exit (or Ctrl-D)     leave the chat
-
-While the agent is working:
-  Ctrl-C                stop the current turn (the chat stays open)
-  type + Enter          steer it — folded in after the current small step
-                        ("wait…"/"actually…" to adjust, "stop" to halt)
-
+_COMMANDS = [
+    ("/help", "show this help"),
+    ("/status", "mode, model, sandbox and how full the context is"),
+    ("/mode plan|auto|dangerous", "switch permission mode for the rest of the session"),
+    ("/compress (/compact)", "compact the conversation now to free up context space"),
+    ("/clear", "forget the conversation so far and start fresh"),
+    ("/sandbox", "show the current sandbox root"),
+    ("/talk (/ptt)", "push-to-talk: speak your next message, Enter to stop"),
+    ("/mic", "cycle mic mode (Open Mic / Push to Talk / Muted)"),
+    ("/exit (Ctrl-D)", "leave the chat"),
+]
+_WHILE_WORKING = [
+    ("Ctrl-C", "stop the current turn (the chat stays open)"),
+    ("type + Enter", "steer it — folded in after the current small step"),
+    ("", '("wait…"/"actually…" to adjust, "stop" to halt)'),
+]
+_HELP_NOTES = """\
 Voice: when voice input is on, just tap Space at the prompt to start talking
 (terminals can't sense key-release, so it's tap-to-start; Enter stops recording).
 
 Editing: ↑/↓ history · ←/→ move · Ctrl-A/E start/end · Ctrl-K/U kill · Ctrl-W del word
 Anything else is sent to the agent as your next message."""
+
+
+def _help_text() -> str:
+    """The /help screen: aligned columns, command names highlighted."""
+    width = max(len(name) for name, _ in _COMMANDS + _WHILE_WORKING) + 2
+
+    def rows(items: list[tuple[str, str]]) -> list[str]:
+        return [
+            "  " + typer.style(f"{name:<{width}}", fg=typer.colors.CYAN) + typer.style(text, dim=not name)
+            for name, text in items
+        ]
+
+    return "\n".join(
+        [
+            typer.style("Commands:", bold=True),
+            *rows(_COMMANDS),
+            "",
+            typer.style("While the agent is working:", bold=True),
+            *rows(_WHILE_WORKING),
+            "",
+            typer.style(_HELP_NOTES, dim=True),
+        ]
+    )
+
 
 def run_chat(opts: GlobalOptions) -> int:
     """Resolve the sandbox/config, build one runtime, and run the chat loop."""
@@ -111,7 +134,10 @@ def run_chat(opts: GlobalOptions) -> int:
         # collide with its spinner.
         steer = SteerSession(instructions, echo=console.say)
         prompter = PausingQueuePrompter(
-            instructions, ConsolePrompter(), steer.prompt_active, echo=console.say
+            instructions,
+            ConsolePrompter(before_prompt=console.quiet),
+            steer.prompt_active,
+            echo=console.say,
         )
         # ask_user reads a line from the terminal, pausing the steering reader.
         asker = make_console_asker(steer.prompt_active)
@@ -373,7 +399,7 @@ async def chat_loop(
             echo("Bye.")
             return
         if message == "/help":
-            echo(_HELP)
+            echo(_help_text())
             continue
         if message == "/sandbox":
             echo(str(runtime.executor.ctx.sandbox.root))

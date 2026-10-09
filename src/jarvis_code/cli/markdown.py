@@ -46,15 +46,34 @@ def _left_aligned_markdown() -> Any:
 
 
 def print_reply(text: str, *, bullet: str = "●") -> None:
-    """Print a reply as Markdown with a coloured bullet in the gutter."""
+    """Print a reply as Markdown with a coloured bullet in the gutter.
+
+    Lines are rendered without right-padding (and trailing blanks are trimmed),
+    so nothing wraps or leaves ragged whitespace if the terminal is resized.
+    """
     from rich.console import Console
-    from rich.table import Table
-    from rich.text import Text
+    from rich.segment import Segment, Segments
+    from rich.style import Style
 
     console = Console(highlight=False)
-    grid = Table.grid(padding=(0, 1))
-    grid.add_column(width=1, no_wrap=True)
-    grid.add_column(ratio=1)
+    options = console.options.update(width=max(20, console.width - 2))
     markdown = _left_aligned_markdown()(sanitize_terminal(text.strip()), code_theme="ansi_dark")
-    grid.add_row(Text(bullet, style="cyan"), markdown)
-    console.print(grid)
+    lines = console.render_lines(markdown, options, pad=False)
+    while lines and not "".join(seg.text for seg in lines[-1]).strip():
+        lines.pop()  # trailing blank lines
+
+    gutter = Segment(f"{bullet} ", Style(color="cyan"))
+    indent = Segment("  ")
+    out: list[Segment] = []
+    for i, line in enumerate(lines):
+        line = list(line)
+        # Trim trailing whitespace that carries no background colour.
+        while line and not line[-1].text.strip() and not (line[-1].style and line[-1].style.bgcolor):
+            line.pop()
+        if line and not (line[-1].style and line[-1].style.bgcolor):
+            last = line[-1]
+            line[-1] = Segment(last.text.rstrip(), last.style)
+        out.append(gutter if i == 0 else indent)
+        out.extend(line)
+        out.append(Segment.line())
+    console.print(Segments(out), end="")

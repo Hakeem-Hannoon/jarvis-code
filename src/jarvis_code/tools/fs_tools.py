@@ -7,6 +7,7 @@ from jarvis_code.sandbox import SandboxViolation
 from jarvis_code.utils.diffs import change_summary, unified_diff
 
 from .base import Tool, ToolContext, ToolResult
+from .protected import protected_reason
 
 _PATH_SCHEMA = {
     "type": "object",
@@ -78,6 +79,8 @@ class ReadFileTool(Tool):
 
     def run(self, ctx: ToolContext, args: dict) -> ToolResult:
         path = self._require(args, "path")
+        if reason := protected_reason(ctx.sandbox, path):
+            return ToolResult.fail(reason, protected=True)
         try:
             content = ctx.sandbox.read(path)
         except (SandboxViolation, OSError, UnicodeDecodeError) as exc:
@@ -138,6 +141,8 @@ class WriteFileTool(Tool):
     def run(self, ctx: ToolContext, args: dict) -> ToolResult:
         path = self._require(args, "path")
         content = self._require(args, "content")
+        if reason := protected_reason(ctx.sandbox, path):
+            return ToolResult.fail(reason, protected=True)
         try:
             try:
                 old = ctx.sandbox.read(path) if ctx.sandbox.exists(path) else ""
@@ -178,6 +183,8 @@ class EditFileTool(Tool):
         old_string = str(self._require(args, "old_string"))
         new_string = str(self._require(args, "new_string"))
         replace_all = _as_bool(args.get("replace_all", False))
+        if reason := protected_reason(ctx.sandbox, path):
+            return ToolResult.fail(reason, protected=True)
         if old_string == "":
             # str.count("") matches between every character: with replace_all it
             # would splice new_string through the entire file.
@@ -221,6 +228,8 @@ class DeleteFileTool(Tool):
 
     def run(self, ctx: ToolContext, args: dict) -> ToolResult:
         path = self._require(args, "path")
+        if reason := protected_reason(ctx.sandbox, path, contains=True):
+            return ToolResult.fail(reason, protected=True)
         try:
             # The link entry, not its target: an in-root symlink that points
             # outside the sandbox can still be removed (the link, never the target).
@@ -239,6 +248,8 @@ class CreateDirectoryTool(Tool):
 
     def run(self, ctx: ToolContext, args: dict) -> ToolResult:
         path = self._require(args, "path")
+        if reason := protected_reason(ctx.sandbox, path):
+            return ToolResult.fail(reason, protected=True)
         try:
             resolved = ctx.sandbox.mkdir(path)
         except (SandboxViolation, OSError) as exc:
@@ -263,6 +274,11 @@ class MoveFileTool(Tool):
     def run(self, ctx: ToolContext, args: dict) -> ToolResult:
         src = self._require(args, "src")
         dst = self._require(args, "dst")
+        reason = protected_reason(ctx.sandbox, src, contains=True) or protected_reason(
+            ctx.sandbox, dst
+        )
+        if reason:
+            return ToolResult.fail(reason, protected=True)
         try:
             src_rel = ctx.sandbox.relpath(src, follow_symlinks=False)
             resolved = ctx.sandbox.move(src, dst)

@@ -27,6 +27,7 @@ from jarvis_code.utils.diffs import unified_diff
 from jarvis_code.utils.logging import get_logger
 
 from .base import ToolContext, ToolResult
+from .protected import protected_reason
 from .registry import ToolRegistry
 from .shell_tool import assess_shell_risk
 
@@ -178,6 +179,9 @@ class ToolExecutor:
     def _preview_diff(self, tool_name: str, args: dict) -> str | None:
         """Best-effort change preview for the approval prompt (read-only)."""
         sandbox = self.ctx.sandbox
+        path_arg = args.get("path")
+        if path_arg and protected_reason(sandbox, path_arg):
+            return None  # the tool will refuse; never render a config's contents
         try:
             if tool_name == "write_file":
                 path = args.get("path")

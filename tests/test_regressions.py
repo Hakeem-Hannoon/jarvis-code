@@ -851,3 +851,75 @@ def test_transcript_never_escapes_or_crashes_when_dot_jarvis_is_a_symlink(
     (tmp_path / ".jarvis").symlink_to(outside)
     SessionWriter(Sandbox(tmp_path)).prompt("hello")  # used to raise SandboxViolation
     assert not any(outside.rglob("*.jsonl"))  # and nothing was written outside
+
+
+# -- jarvis's own config is off-limits to the agent ---------------------------
+
+
+@pytest.fixture
+def configured(root: Path) -> Path:
+    (root / ".jarvis").mkdir()
+    (root / ".jarvis" / "config.toml").write_text(
+        'default_provider = "anthropic"\n[providers.anthropic]\n'
+        'api_key = "sk-loaded-key-000000"\nmodel = "m"\n'
+    )
+    # A SECOND config nobody loaded: its key is not registered with the redactor.
+    (root / ".jarvis.toml").write_text(
+        '[providers.openai]\napi_key = "sk-unregistered-key-999999"\nmodel = "m"\n'
+    )
+    return root
+
+
+def test_agent_cannot_read_config_files(executor, configured: Path) -> None:
+    for path in (".jarvis/config.toml", ".jarvis.toml", "./.jarvis/../.jarvis.toml"):
+        res = executor.execute("read_file", {"path": path}).result
+        assert not res.ok and "off-limits" in res.error
+        assert "sk-" not in (res.output + res.error)
+
+
+def test_agent_cannot_read_config_through_a_symlink(executor, configured: Path) -> None:
+    (configured / "innocent.txt").symlink_to(configured / ".jarvis.toml")
+    res = executor.execute("read_file", {"path": "innocent.txt"}).result
+    assert not res.ok and "sk-" not in (res.output + res.error)
+
+
+def test_search_never_surfaces_config_contents(executor, configured: Path) -> None:
+    grep = executor.execute("grep_text", {"pattern": "api_key"}).result.output
+    assert "sk-" not in grep and ".jarvis" not in grep
+    assert ".jarvis.toml" not in executor.execute("search_files", {"pattern": "*.toml"}).result.output
+
+
+@pytest.mark.parametrize(
+    "tool,args",
+    [
+        ("write_file", {"path": ".jarvis/config.toml", "content": "endpoint = 'http://evil'"}),
+        ("write_file", {"path": ".jarvis.toml", "content": "x"}),
+        ("edit_file", {"path": ".jarvis/config.toml", "old_string": "m", "new_string": "n"}),
+        ("delete_file", {"path": ".jarvis/config.toml"}),
+        ("delete_file", {"path": ".jarvis"}),
+        ("move_file", {"src": ".jarvis", "dst": "elsewhere"}),
+        ("move_file", {"src": "a.txt", "dst": ".jarvis/config.toml"}),
+    ],
+)
+def test_agent_cannot_modify_config_even_in_dangerous_mode(
+    executor, configured: Path, tool: str, args: dict
+) -> None:
+    before = (configured / ".jarvis" / "config.toml").read_text()
+    res = executor.execute(tool, args).result
+    assert not res.ok and "off-limits" in res.error
+    assert (configured / ".jarvis" / "config.toml").read_text() == before
+
+
+def test_agent_cannot_plant_a_config_where_none_exists(executor, root: Path) -> None:
+    # A planted config could point `endpoint` at another host and receive the
+    # user's env-provided key on the next run.
+    res = executor.execute("write_file", {"path": ".jarvis.toml", "content": "x"}).result
+    assert not res.ok
+    assert not (root / ".jarvis.toml").exists()
+
+
+def test_session_transcripts_under_dot_jarvis_stay_usable(executor, configured: Path) -> None:
+    # Only the config is protected — not everything under .jarvis/.
+    (configured / ".jarvis" / "sessions").mkdir()
+    (configured / ".jarvis" / "sessions" / "s.jsonl").write_text("{}\n")
+    assert executor.execute("read_file", {"path": ".jarvis/sessions/s.jsonl"}).result.ok

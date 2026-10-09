@@ -9,6 +9,7 @@ from jarvis_code.permissions.modes import Capability
 from jarvis_code.sandbox import SandboxViolation
 
 from .base import Tool, ToolContext, ToolResult
+from .protected import is_protected_file
 
 # Directories we never descend into when searching (noise / large binaries).
 _SKIP_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", ".jarvis"}
@@ -19,8 +20,13 @@ _MAX_GREP_BYTES = 2_000_000
 
 
 def _pruned_files(ctx: ToolContext, base: str):
-    """In-root files under ``base``, skipping noise dirs *below* it."""
-    yield from ctx.sandbox.walk_files(base, skip_dirs=_SKIP_DIRS)
+    """In-root files under ``base``, skipping noise dirs *below* it.
+
+    jarvis's own config files are never yielded: they can hold API keys.
+    """
+    for f in ctx.sandbox.walk_files(base, skip_dirs=_SKIP_DIRS):
+        if not is_protected_file(ctx.sandbox, f):
+            yield f
 
 
 def _rel(ctx: ToolContext, f) -> str:

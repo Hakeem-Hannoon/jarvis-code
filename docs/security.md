@@ -71,7 +71,18 @@ session and its context survive; Ctrl-C at the idle prompt leaves the chat.
 - A `RedactingFilter` scrubs any registered key from every log record; the
   session transcript writer routes every field through the same redactor.
 - The config holding keys lives under `.jarvis/`, which `jarvis init` makes
-  git-ignored by default (`.jarvis/.gitignore` = `*`).
+  git-ignored by default (`.jarvis/.gitignore` = `*`) and owner-only (`0600`).
+- The agent's file tools cannot read, search, write, edit, move or delete
+  jarvis's own config (`.jarvis/config.toml`, `.jarvis.toml`) in any mode —
+  redaction only covers the keys that were *loaded*, and a config the agent can
+  write is one a prompt injection could repoint at another endpoint.
+- Subprocesses run with credential-shaped environment variables removed
+  (`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*PASSWORD`, … and bare `API_KEY`/`TOKEN`).
+
+> **Know the limit:** a project-local config is trusted. Running `jarvis` in a
+> directory you did not create means its `.jarvis.toml`, if any, chooses the
+> endpoint your key is sent to. Prefer the global config (`jarvis init --global`)
+> when working in checkouts you don't fully trust.
 
 ## Voice privacy
 

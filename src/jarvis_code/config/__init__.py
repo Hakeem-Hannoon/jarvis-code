@@ -9,6 +9,7 @@ from .errors import (
     MissingAPIKeyError,
 )
 from .loader import (
+    PROJECT_CONFIG_CANDIDATES,
     default_config_path,
     env_var_for,
     find_config_path,
@@ -37,6 +38,7 @@ __all__ = [
     "ConfigValidationError",
     "MissingAPIKeyError",
     "DEFAULT_CONFIG_TEMPLATE",
+    "PROJECT_CONFIG_CANDIDATES",
     "default_config_path",
     "env_var_for",
     "find_config_path",

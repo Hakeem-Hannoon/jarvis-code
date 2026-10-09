@@ -98,3 +98,84 @@ async def test_run_survives_a_tool_call_with_bad_arguments(sandbox: Sandbox) -> 
     assert result.final_text == "recovered"
     # The model was told what went wrong so it could correct itself.
     assert "missing required argument" in provider.calls[1][-1].content
+
+
+# -- edit_file ---------------------------------------------------------------
+
+
+def test_edit_rejects_empty_old_string(executor, root: Path) -> None:
+    # "".count() matches between every character; replace_all used to splice the
+    # replacement through the entire file.
+    out = executor.execute(
+        "edit_file",
+        {"path": "a.txt", "old_string": "", "new_string": "X", "replace_all": True},
+    )
+    assert out.result is not None and not out.result.ok
+    assert (root / "a.txt").read_text() == "hello\nworld\n"  # untouched
+
+
+def test_edit_replace_all_string_false_is_false(executor, root: Path) -> None:
+    (root / "r.txt").write_text("a a a")
+    out = executor.execute(
+        "edit_file",
+        {"path": "r.txt", "old_string": "a", "new_string": "b", "replace_all": "false"},
+    )
+    assert out.result is not None and not out.result.ok  # 3 matches, not unique
+    assert (root / "r.txt").read_text() == "a a a"
+
+
+def test_edit_noop_is_rejected(executor) -> None:
+    out = executor.execute(
+        "edit_file", {"path": "a.txt", "old_string": "hello", "new_string": "hello"}
+    )
+    assert out.result is not None and not out.result.ok
+
+
+# -- symlinks: act on the link entry, never its target ------------------------
+
+
+def test_delete_removes_an_in_root_symlink_that_points_outside(
+    executor, root: Path, tmp_path_factory
+) -> None:
+    outside = tmp_path_factory.mktemp("outside") / "keep.txt"
+    outside.write_text("do not touch")
+    (root / "link_out").symlink_to(outside)
+    out = executor.execute("delete_file", {"path": "link_out"})
+    assert out.result is not None and out.result.ok
+    assert not (root / "link_out").is_symlink()  # the link is gone
+    assert outside.read_text() == "do not touch"  # the target is untouched
+
+
+def test_list_files_names_the_symlink_not_its_target(executor, root: Path) -> None:
+    (root / "sub").mkdir()
+    (root / "sub" / "f.txt").write_text("x")
+    (root / "alias.txt").symlink_to(root / "sub" / "f.txt")
+    names = executor.execute("list_files", {"path": "."}).result.output.splitlines()
+    assert "alias.txt" in names
+    assert "sub/f.txt" not in names  # used to show the target's path instead
+
+
+# -- move_file ----------------------------------------------------------------
+
+
+def test_move_into_a_directory_reports_the_real_destination(executor, root: Path) -> None:
+    (root / "d").mkdir()
+    (root / "m.txt").write_text("m")
+    out = executor.execute("move_file", {"src": "m.txt", "dst": "d"})
+    assert out.result is not None and out.result.ok
+    assert out.result.metadata["files_changed"] == ["m.txt", "d/m.txt"]
+    assert (root / "d" / "m.txt").read_text() == "m"
+
+
+def test_move_refuses_to_clobber_an_existing_file(executor, root: Path) -> None:
+    (root / "b.txt").write_text("precious")
+    out = executor.execute("move_file", {"src": "a.txt", "dst": "b.txt"})
+    assert out.result is not None and not out.result.ok
+    assert (root / "b.txt").read_text() == "precious"
+    assert (root / "a.txt").exists()
+
+
+def test_read_file_offset_past_the_end_is_an_error(executor) -> None:
+    out = executor.execute("read_file", {"path": "a.txt", "offset": 50})
+    assert out.result is not None and not out.result.ok
+    assert "past the end" in (out.result.error or "")

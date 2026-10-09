@@ -190,9 +190,10 @@ class ToolExecutor:
                 if not path or not sandbox.exists(path):
                     return None
                 old = sandbox.read(path)
-                new = old.replace(
-                    str(args.get("old_string", "")), str(args.get("new_string", ""))
-                )
+                needle = str(args.get("old_string", ""))
+                if not needle:
+                    return None  # the tool rejects an empty old_string
+                new = old.replace(needle, str(args.get("new_string", "")))
                 return unified_diff(old, new, str(path)) or None
         except (SandboxViolation, OSError, UnicodeDecodeError):
             return None

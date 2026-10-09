@@ -7,7 +7,7 @@ logged URLs); Vertex uses a bearer token and a project/location URL.
 
 from __future__ import annotations
 
-from .base import HTTPProvider, as_arguments
+from .base import HTTPProvider, as_arguments, new_call_id
 from .types import Message, ModelResponse, Role, ToolCall, ToolSpec
 
 _GEMINI_BASE = "https://generativelanguage.googleapis.com"
@@ -129,7 +129,7 @@ class GeminiStyleProvider(HTTPProvider):
         parts = (candidate.get("content") or {}).get("parts") or []
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
-        for i, part in enumerate(parts):
+        for part in parts:
             if "functionCall" in part:
                 fc = part["functionCall"] or {}
                 metadata = {}
@@ -137,7 +137,7 @@ class GeminiStyleProvider(HTTPProvider):
                     metadata["thought_signature"] = part["thoughtSignature"]
                 tool_calls.append(
                     ToolCall(
-                        id=f"call_{i}",
+                        id=new_call_id(),  # Gemini has no ids; see new_call_id
                         name=fc.get("name", ""),
                         arguments=as_arguments(fc.get("args")),
                         metadata=metadata,

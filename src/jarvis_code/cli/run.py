@@ -7,7 +7,7 @@ from pathlib import Path
 
 import typer
 
-from jarvis_code.agent import assemble_runtime
+from jarvis_code.agent import assemble_runtime, split_model_spec
 from jarvis_code.agent.loop import RunStatus
 from jarvis_code.agent.memory import save_project_memory
 from jarvis_code.config import ConfigError, Effort, load_config
@@ -18,12 +18,9 @@ from jarvis_code.voice import VoiceReporter, VoiceSubsystem, select_engine
 from .approval import ConsolePrompter
 from .interrupts import route_sigint
 from .options import GlobalOptions
+from .settings import DANGEROUS_WARNING
 from .steer import make_console_asker
 from .ui import CompositeReporter, ConsoleReporter, print_finish_summary
-
-_DANGEROUS_WARNING = (
-    "⚠  DANGEROUS MODE — no per-action approval. Still confined to the sandbox."
-)
 
 _MADMAX_HEADSUP = (
     "⚠  madmax effort — unlimited steps + sub-agents: slower, more tokens. "
@@ -34,6 +31,21 @@ _MADMAX_HEADSUP = (
 def resolve_effort(opts: GlobalOptions, config) -> Effort:
     """CLI --effort overrides the config's [agent] effort."""
     return opts.effort or config.agent.effort
+
+
+def resolve_model_flags(opts: GlobalOptions, config) -> tuple[str | None, str | None]:
+    """``(provider, model)`` from --provider/--model.
+
+    ``--model openai/gpt-5`` names both at once; an explicit --provider wins if
+    the two disagree. The prefix only counts when it is a configured provider,
+    so model ids that contain a slash are passed through untouched.
+    """
+    provider, model = opts.provider, opts.model
+    if model:
+        prefix, bare = split_model_spec(model, set(config.providers))
+        if prefix is not None:
+            provider, model = provider or prefix, bare
+    return provider, model
 
 
 def run_task(opts: GlobalOptions, task: str) -> int:
@@ -54,7 +66,7 @@ def run_task(opts: GlobalOptions, task: str) -> int:
     effort = resolve_effort(opts, config)
 
     if opts.mode == PermissionMode.DANGEROUS:
-        typer.echo(typer.style(_DANGEROUS_WARNING, fg=typer.colors.RED, bold=True))
+        typer.echo(typer.style(DANGEROUS_WARNING, fg=typer.colors.RED, bold=True))
     if effort == Effort.MADMAX:
         typer.echo(typer.style(_MADMAX_HEADSUP, fg=typer.colors.YELLOW, bold=True))
 
@@ -78,14 +90,15 @@ def run_task(opts: GlobalOptions, task: str) -> int:
             voice_sub = VoiceSubsystem(select_engine(config.voice), config.voice)
             await voice_sub.start()
             reporter = CompositeReporter([console, VoiceReporter(voice_sub)])
+        provider_name, model = resolve_model_flags(opts, config)
         try:
             runtime = assemble_runtime(
                 config=config,
                 sandbox=sandbox,
                 mode=opts.mode,
                 provider=None,
-                provider_name=opts.provider,  # --provider / --model overrides
-                model=opts.model,
+                provider_name=provider_name,  # --provider / --model overrides
+                model=model,
                 prompter=ConsolePrompter(before_prompt=console.quiet),
                 reporter=reporter,
                 effort=effort,

@@ -8,6 +8,7 @@ Commands:
     jarvis doctor                        environment + config health checks
     jarvis config path|validate          config helpers
     jarvis voices list|test              voice engine info
+    jarvis models                        providers + models you can switch to
 
 ``jarvis "<task>"`` works via a default-command group: any leading token that is
 not a known subcommand is treated as a task for the hidden ``run`` command.
@@ -29,6 +30,7 @@ from jarvis_code.permissions import PermissionMode
 from .chat import run_chat
 from .doctor import run_doctor
 from .init import run_init
+from .models_cmd import run_models
 from .options import GlobalOptions, parse_voice
 from .run import run_task
 from .voices import voices_list, voices_test
@@ -47,7 +49,7 @@ app = typer.Typer(
         '  jarvis                                    start an interactive chat\n'
         '  jarvis "fix the failing test"             run one task, then exit\n'
         '  jarvis --mode plan "explain this repo"    read-only: look, don\'t touch\n'
-        '  jarvis --effort high --model <id> "..."   work harder / pick a model\n'
+        '  jarvis -m openai/gpt-5 -e high "..."      pick a model / work harder\n'
         '  jarvis init && jarvis doctor              first-time setup + health check'
     ),
     add_completion=False,
@@ -75,8 +77,13 @@ def main(
     sandbox: str = typer.Option(
         None, "--sandbox", help="Sandbox root (default: current directory)."
     ),
-    provider: str = typer.Option(None, "--provider", help="Override the configured provider."),
-    model: str = typer.Option(None, "--model", help="Override the configured model."),
+    provider: str = typer.Option(
+        None, "--provider", "-p", help="Use this configured provider for the run."
+    ),
+    model: str = typer.Option(
+        None, "--model", "-m",
+        help="Use this model. 'provider/model' picks both, e.g. openai/gpt-5.",
+    ),
     mode: PermissionMode = typer.Option(
         PermissionMode.AUTO, "--mode", case_sensitive=False,
         help="Permission mode: plan (read-only), auto (asks), or dangerous.",
@@ -86,7 +93,7 @@ def main(
         help="Voice output: true or false. Default: on (override the config).",
     ),
     effort: Optional[Effort] = typer.Option(
-        None, "--effort", case_sensitive=False,
+        None, "--effort", "-e", case_sensitive=False,
         help="How hard to work: low, medium, high, or madmax (sub-agents + max rigor).",
     ),
 ) -> None:
@@ -138,6 +145,17 @@ def doctor_cmd(ctx: typer.Context) -> None:
     raise typer.Exit(run_doctor(ctx.obj or GlobalOptions()))
 
 
+@app.command("models")
+def models_cmd(
+    ctx: typer.Context,
+    no_fetch: bool = typer.Option(
+        False, "--offline", help="Only show what the config says; don't ask the providers."
+    ),
+) -> None:
+    """List configured providers and the models you can switch to."""
+    raise typer.Exit(run_models(ctx.obj or GlobalOptions(), fetch=not no_fetch))
+
+
 @config_app.command("path")
 def config_path_cmd(ctx: typer.Context) -> None:
     """Print the resolved config file path (or where to create it)."""
@@ -176,9 +194,11 @@ def voices_test_cmd(ctx: typer.Context) -> None:
     raise typer.Exit(voices_test(ctx.obj or GlobalOptions()))
 
 
-_SUBCOMMANDS = {"init", "doctor", "config", "voices", "run"}
+_SUBCOMMANDS = {"init", "doctor", "config", "voices", "models", "run"}
 # Global options that consume the following token as their value.
-_VALUE_OPTIONS = {"--sandbox", "--provider", "--model", "--mode", "--voice", "--effort"}
+_VALUE_OPTIONS = {
+    "--sandbox", "--provider", "--model", "--mode", "--voice", "--effort", "-p", "-m", "-e",
+}
 _PASSTHROUGH = {"--help", "-h", "--version"}
 
 

@@ -94,8 +94,12 @@ conversation where each line is a turn and context carries across turns.
 - **Steer or stop it mid-turn.** Type a line while it works to redirect it, or
   press **Ctrl-C** to stop the current turn — the chat (and its context) stays
   open. Ctrl-C at the idle prompt leaves.
-- **In-chat commands:** `/help` · `/status` · `/mode plan|auto|dangerous` ·
-  `/compress` · `/clear` · `/sandbox` · `/talk` · `/mic` · `/exit` (or Ctrl-D).
+- **Switch anything on the fly.** `/model`, `/provider`, `/effort` and `/mode`
+  open a picker (or take a value: `/model openai/gpt-5`); Tab completes; `/save`
+  keeps the choice. See [Providers](#providers).
+- **In-chat commands:** `/help` · `/status` · `/model` · `/provider` · `/effort` ·
+  `/mode` · `/save` · `/compress` · `/clear` · `/sandbox` · `/talk` · `/mic` ·
+  `/exit` (or Ctrl-D).
 
 Prefer a one-shot run instead of a chat?
 
@@ -185,7 +189,40 @@ which it uses to revise its approach.
 ## Providers
 
 Configure in `.jarvis/config.toml` (created by `jarvis init`) or via env vars.
-Select at runtime with `--provider <name>` and `--model <name>`.
+
+### Switching model, provider, effort and mode
+
+Everything in the banner line — `MODE: auto  EFFORT: medium  azure · my-model` —
+can be changed without leaving the chat:
+
+| In the chat | What it does |
+|-------------|--------------|
+| `/model` | Opens a picker: ↑/↓ to move, **type to filter**, Enter. Lists what the provider's API reports plus your favourites, then other providers' models. Type any name to use it as-is (e.g. an Azure deployment). |
+| `/model gpt-5` | Switch model directly. |
+| `/model openai/gpt-5` | Switch provider *and* model in one go. |
+| `/provider` · `/provider openai` | Pick a provider (uses the model configured for it). |
+| `/effort` · `/effort high` | `low` · `medium` · `high` · `madmax`. |
+| `/mode` · `/mode plan` | `plan` · `auto` · `dangerous`. |
+| `/save` | Make the current provider, model and effort the **default** (edits those three values in your config; comments and keys untouched). |
+| `/status` | Show what's in effect. |
+
+**Tab** completes the commands and their values. A switch lasts for the session
+until you `/save`; the conversation carries over, including across providers.
+
+At launch: `jarvis -m openai/gpt-5 -e high "task"` (`-m/--model`, `-p/--provider`,
+`-e/--effort`, `--mode`). `jarvis models` lists every configured provider, whether
+it has a key, and the models you can switch to.
+
+Pin favourites for the picker with `models = [...]` — handy where the API can't
+list models (Azure deployments):
+
+```toml
+[providers.azure]
+model  = "DeepSeek-V4-Pro"                 # the default
+models = ["gpt-5-mini", "my-other-deployment"]
+```
+
+### Supported providers
 
 | Provider     | Config key            | Env var             | Notes |
 |--------------|-----------------------|---------------------|-------|
@@ -279,10 +316,11 @@ Output and input are independent — enable either alone.
 jarvis                                start an interactive chat session (REPL)
 jarvis "<task>"                       run the agent on a single task, then exit
 jarvis --mode plan|auto|dangerous     select permission mode (default: auto)
-jarvis --effort low|medium|high|madmax  how hard to work (default: medium)
+jarvis -e low|medium|high|madmax      how hard to work (default: medium)
 jarvis --voice true|false             voice output on/off for this run (default: on)
 jarvis --sandbox <path>               set the sandbox root
-jarvis --provider <p> --model <m>     override provider/model
+jarvis -p <provider> -m <model>       pick provider/model (-m openai/gpt-5 does both)
+jarvis models                         providers, key status, and models you can switch to
 jarvis init [--global]                scaffold .jarvis/  (or a per-user global config)
 jarvis doctor                         environment + config health checks
 jarvis config path | validate         config helpers

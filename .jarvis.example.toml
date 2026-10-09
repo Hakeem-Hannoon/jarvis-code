@@ -7,13 +7,15 @@
 #
 # This file is safe to commit. Your real config (.jarvis/) is git-ignored.
 
-# Which provider + model to use by default. Override at runtime with
-# `jarvis --provider <name> --model <name>`.
+# Which provider + model to use by default. Override at launch with
+# `jarvis -m <provider>/<model>`, or in the chat with /model, /provider, /effort
+# (and /save to write your choice back here).
 default_provider = "anthropic"
 
 [providers.anthropic]
 api_key = ""                                  # or set ANTHROPIC_API_KEY
 model = "claude-opus-4-8"
+# models = ["another-model-id"]              # optional favourites for the /model picker
 
 [providers.openai]
 api_key = ""                                  # or set OPENAI_API_KEY

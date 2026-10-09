@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import HTTPProvider, as_arguments
+from .base import HTTPProvider, as_arguments, new_call_id
 from .types import Message, ModelResponse, Role, ToolCall, ToolSpec
 
 _DEFAULT_BASE = "https://api.anthropic.com"
@@ -96,7 +96,7 @@ class AnthropicProvider(HTTPProvider):
             elif block.get("type") == "tool_use":
                 tool_calls.append(
                     ToolCall(
-                        id=block.get("id", ""),
+                        id=block.get("id") or new_call_id(),
                         name=block.get("name", ""),
                         arguments=as_arguments(block.get("input")),
                     )

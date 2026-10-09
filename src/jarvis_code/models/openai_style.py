@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 
-from .base import HTTPProvider, as_arguments
+from .base import HTTPProvider, as_arguments, new_call_id
 from .types import Message, ModelResponse, Role, ToolCall, ToolSpec
 
 _NOT_CHAT = re.compile(
@@ -167,12 +167,14 @@ class OpenAIStyleProvider(HTTPProvider):
         text = message.get("content") or ""
         tool_calls = []
         for tc in message.get("tool_calls") or []:
-            fn = tc.get("function", {})
+            fn = tc.get("function") or {}
             try:
                 arguments = as_arguments(json.loads(fn.get("arguments") or "{}"))
             except json.JSONDecodeError:
                 arguments = {}
-            tool_calls.append(ToolCall(id=tc.get("id", ""), name=fn.get("name", ""), arguments=arguments))
+            tool_calls.append(
+                ToolCall(id=tc.get("id") or new_call_id(), name=fn.get("name", ""), arguments=arguments)
+            )
         return ModelResponse(
             text=text,
             tool_calls=tool_calls,

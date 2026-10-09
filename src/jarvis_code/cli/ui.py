@@ -148,6 +148,12 @@ class CompositeReporter:
             if hook is not None:
                 hook(active)
 
+    def awaiting_approval(self, request: object) -> None:
+        for r in self._reporters:
+            hook = getattr(r, "awaiting_approval", None)
+            if hook is not None:
+                hook(request)
+
 
 def print_finish_summary(result: RunResult) -> None:
     state: RunState = result.state

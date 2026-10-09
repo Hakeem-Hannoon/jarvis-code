@@ -58,8 +58,8 @@ class VoiceReporter:
             self._say(phrase)
             return
         if name == "run_shell" and self._vs.voice.announce_permissions:
-            # The permission request is announced by `permission` below; here we
-            # only voice non-shell tool activity to avoid double-speaking.
+            # A shell command that needs approval is announced by
+            # `awaiting_approval`; staying quiet here avoids double-speaking.
             return
         self._spoke_this_turn = True
         self._say(messages.tool_status_phrase(name))
@@ -70,6 +70,11 @@ class VoiceReporter:
 
     def tool_finished(self, name: str, ok: bool, detail: str) -> None:
         return None
+
+    def awaiting_approval(self, request: object) -> None:
+        # The one line worth interrupting for: the agent is blocked on the user.
+        # Only the program name is ever voiced (never arguments).
+        self._vs.announce_permission(getattr(request, "command", None))
 
     def permission(self, tool: str, outcome: str, reason: str | None) -> None:
         if outcome == "denied":

@@ -923,3 +923,66 @@ def test_session_transcripts_under_dot_jarvis_stay_usable(executor, configured: 
     (configured / ".jarvis" / "sessions").mkdir()
     (configured / ".jarvis" / "sessions" / "s.jsonl").write_text("{}\n")
     assert executor.execute("read_file", {"path": ".jarvis/sessions/s.jsonl"}).result.ok
+
+
+# -- voice --------------------------------------------------------------------
+
+
+class _RecordingEngine:
+    name = "rec"
+
+    def __init__(self) -> None:
+        self.spoken: list[str] = []
+
+    async def speak(self, text, options=None) -> None:
+        self.spoken.append(text)
+
+    async def stop(self) -> None: ...
+
+    async def is_available(self) -> bool:
+        return True
+
+
+async def test_voice_speaks_while_the_agent_loop_is_blocked() -> None:
+    import time
+
+    from jarvis_code.config import VoiceConfig
+    from jarvis_code.voice import VoiceSubsystem
+
+    engine = _RecordingEngine()
+    vs = VoiceSubsystem(engine, VoiceConfig())
+    await vs.start()
+    try:
+        vs.say("Awaiting your authorization.")
+        # Block the event loop the way a synchronous tool / approval prompt does.
+        deadline = time.monotonic() + 3
+        while not engine.spoken and time.monotonic() < deadline:
+            time.sleep(0.02)  # deliberately NOT awaiting
+        assert engine.spoken == ["Awaiting your authorization."]
+    finally:
+        await vs.aclose()
+
+
+async def test_approval_request_is_announced_by_voice(sandbox: Sandbox) -> None:
+    from jarvis_code.config import VoiceConfig
+    from jarvis_code.permissions import DenyPrompter
+    from jarvis_code.voice import VoiceReporter, VoiceSubsystem
+
+    engine = _RecordingEngine()
+    vs = VoiceSubsystem(engine, VoiceConfig())
+    await vs.start()
+    provider = ScriptedProvider(
+        [
+            ModelResponse(tool_calls=[ToolCall("c1", "run_shell", {"command": "pytest -q --secret=x"})]),
+            ModelResponse(text="ok"),
+        ]
+    )
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.AUTO, provider=provider,
+        prompter=DenyPrompter(), reporter=VoiceReporter(vs),
+    )
+    await runtime.run("run tests")
+    await vs.drain()
+    await vs.aclose()
+    assert "Awaiting your authorization to run pytest, sir." in engine.spoken
+    assert not any("secret" in line for line in engine.spoken)  # program name only

@@ -345,10 +345,15 @@ class AgentRuntime:
             # Show the boxed, risk-coloured command (or the "updates" diff) before
             # it runs — unless policy will deny it outright.
             request = self.executor.preview(tc.name, tc.arguments, response.text or None)
-            if request is not None and (
-                self.executor.permissions.decide(request.capability) is not Decision.DENY
-            ):
-                self.reporter.action(request)
+            if request is not None:
+                decision = self.executor.permissions.decide(request.capability)
+                if decision is not Decision.DENY:
+                    self.reporter.action(request)
+                if decision is Decision.ASK:
+                    # Optional hook (voice says "awaiting your authorization").
+                    hook = getattr(self.reporter, "awaiting_approval", None)
+                    if hook is not None:
+                        hook(request)
             outcome = self.executor.execute(
                 tc.name, tc.arguments, rationale=response.text or None, request=request
             )

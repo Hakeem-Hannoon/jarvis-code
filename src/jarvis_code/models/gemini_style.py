@@ -94,6 +94,23 @@ class GeminiStyleProvider(HTTPProvider):
         url = f"{base}/v1beta/models/{self.model}:generateContent"
         return url, {"x-goog-api-key": self._api_key, "content-type": "application/json"}
 
+    def _models_request(self):
+        if self._variant == "vertex":
+            return None  # publisher models are not listable with this auth
+        base = (self.endpoint or _GEMINI_BASE).rstrip("/")
+        return f"{base}/v1beta/models?pageSize=1000", {"x-goog-api-key": self._api_key}
+
+    def _parse_models(self, data: dict) -> list[str]:
+        out = []
+        for m in data.get("models") or []:
+            if not isinstance(m, dict):
+                continue
+            if "generateContent" not in (m.get("supportedGenerationMethods") or []):
+                continue  # embedding / imagen / etc.
+            name = str(m.get("name", ""))
+            out.append(name.removeprefix("models/"))
+        return out
+
     def _build_request(self, messages, tools):
         url, headers = self._url_and_headers()
         system, contents = _messages_to_gemini(messages)

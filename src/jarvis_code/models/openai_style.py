@@ -7,9 +7,16 @@ base URL and auth header, so one class with a ``variant`` covers all three.
 from __future__ import annotations
 
 import json
+import re
 
 from .base import HTTPProvider, as_arguments
 from .types import Message, ModelResponse, Role, ToolCall, ToolSpec
+
+_NOT_CHAT = re.compile(
+    r"embed|whisper|tts|dall-e|image|audio|realtime|moderation|transcribe|sora|"
+    r"babbage|davinci|search|similarity|computer-use",
+    re.I,
+)
 
 _DEFAULT_BASE = {
     "openai": "https://api.openai.com/v1",
@@ -109,6 +116,22 @@ class OpenAIStyleProvider(HTTPProvider):
             f"{base}/chat/completions",
             {"Authorization": f"Bearer {self._api_key}", "content-type": "application/json"},
         )
+
+    def _models_request(self):
+        if self._variant == "azure":
+            base = (self.endpoint or "").rstrip("/")
+            # Only the OpenAI-compatible v1 surface lists models; classic
+            # deployments and the Foundry inference route cannot be enumerated
+            # with a data-plane key.
+            if base and self._is_openai_v1(base):
+                return f"{base}/models", {"Authorization": f"Bearer {self._api_key}"}
+            return None
+        base = (self.endpoint or _DEFAULT_BASE[self._variant]).rstrip("/")
+        return f"{base}/models", {"Authorization": f"Bearer {self._api_key}"}
+
+    def _parse_models(self, data: dict) -> list[str]:
+        # The listing mixes in embedding / audio / image models that cannot chat.
+        return [m for m in super()._parse_models(data) if not _NOT_CHAT.search(m)]
 
     def _max_tokens_field(self) -> str:
         """The name of the response-budget parameter for this endpoint.

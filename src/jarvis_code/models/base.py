@@ -153,6 +153,38 @@ class HTTPProvider:
             raise ProviderError(f"{self.name} returned an unexpected response shape.")
         return self._parse_response(data)
 
+    # -- model discovery ----------------------------------------------------
+
+    def _models_request(self) -> tuple[str, dict] | None:
+        """``(url, headers)`` for this provider's "list models" endpoint, if any."""
+        return None
+
+    def _parse_models(self, data: dict) -> list[str]:
+        """Model ids from a "list models" response (OpenAI-style by default)."""
+        return [m["id"] for m in data.get("data") or [] if isinstance(m, dict) and m.get("id")]
+
+    def list_models(self, *, timeout: float = 6.0) -> list[str]:
+        """Model ids this key can use, best effort — ``[]`` when unknown.
+
+        Used only to make switching models pleasant (a picker, tab completion),
+        so it never raises: an endpoint that can't list its models (an Azure
+        deployment, a local gateway) simply yields nothing and the user types
+        the name instead.
+        """
+        request = self._models_request()
+        if request is None:
+            return []
+        url, headers = request
+        try:
+            response = self._client.request("GET", url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+            models = self._parse_models(data) if isinstance(data, dict) else []
+        except Exception as exc:  # network, auth, shape — all "unknown"
+            _log.debug("%s: could not list models (%s)", self.name, type(exc).__name__)
+            return []
+        return sorted({m for m in models if isinstance(m, str) and m})
+
     # Injectable so tests don't actually wait out a backoff.
     _sleep = staticmethod(time.sleep)
 

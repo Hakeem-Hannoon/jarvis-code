@@ -80,6 +80,13 @@ class AnthropicProvider(HTTPProvider):
         }
         return "POST", f"{base}/v1/messages", headers, body
 
+    def _models_request(self):
+        base = (self.endpoint or _DEFAULT_BASE).rstrip("/")
+        return f"{base}/v1/models?limit=1000", {
+            "x-api-key": self._api_key,
+            "anthropic-version": _API_VERSION,
+        }
+
     def _parse_response(self, data: dict) -> ModelResponse:
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []

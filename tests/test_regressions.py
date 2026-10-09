@@ -438,6 +438,20 @@ async def test_interrupt_abandons_a_slow_model_call_immediately(sandbox: Sandbox
     assert time.monotonic() - started < 5  # not the provider's 30 seconds
 
 
+async def test_an_interrupt_only_stops_its_own_turn(sandbox: Sandbox) -> None:
+    import asyncio
+
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.PLAN, provider=_SlowProvider(30)
+    )
+    asyncio.get_running_loop().call_later(0.2, runtime.interrupt.set)
+    assert (await runtime.run("think forever")).status is RunStatus.ABORTED
+    # The flag is reset per turn (it once leaked and aborted every later turn).
+    runtime.provider = ScriptedProvider([ModelResponse(text="back to work")])
+    again = await runtime.run("carry on")
+    assert again.status is RunStatus.COMPLETE
+
+
 async def test_typed_stop_lands_during_the_model_call(sandbox: Sandbox) -> None:
     import asyncio
     import time
@@ -750,3 +764,52 @@ def test_azure_without_an_endpoint_is_a_clear_config_error() -> None:
 
     with pytest.raises(ConfigError, match="endpoint"):
         build_provider(_provider_config("azure"))
+
+
+# -- CLI wiring ---------------------------------------------------------------
+
+
+def test_provider_and_model_flags_reach_the_provider(sandbox: Sandbox) -> None:
+    # --provider/--model were parsed and then silently ignored.
+    config = JarvisConfig.model_validate(
+        {
+            "default_provider": "anthropic",
+            "providers": {
+                "anthropic": {"api_key": "sk-test-000000", "model": "claude-x"},
+                "deepseek": {"api_key": "sk-test-111111", "model": "deepseek-chat"},
+            },
+        }
+    )
+    runtime = assemble_runtime(
+        config=config, sandbox=sandbox, mode=PermissionMode.PLAN,
+        provider_name="deepseek", model="deepseek-reasoner",
+    )
+    assert runtime.provider.name == "deepseek"
+    assert runtime.provider.model == "deepseek-reasoner"
+
+
+def test_short_path_only_abbreviates_whole_home_components() -> None:
+    from jarvis_code.cli.chat import _short_path
+
+    home = Path.home()
+    assert _short_path(home) == "~"
+    assert _short_path(home / "proj") == "~/proj"
+    sibling = Path(str(home) + "2") / "x"  # /home/alice2/x is NOT under /home/alice
+    assert _short_path(sibling) == str(sibling)
+
+
+def test_unknown_provider_flag_is_a_friendly_error(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from jarvis_code.cli.main import app
+
+    (tmp_path / ".jarvis.toml").write_text(
+        'default_provider = "anthropic"\n[providers.anthropic]\n'
+        'api_key = "sk-test-000000"\nmodel = "m"\n[voice]\nenabled = false\n'
+    )
+    result = CliRunner().invoke(
+        app, ["--sandbox", str(tmp_path), "--provider", "nope", "run", "hello"]
+    )
+    assert result.exit_code == 1
+    assert "not configured" in result.output
+    assert "Traceback" not in result.output

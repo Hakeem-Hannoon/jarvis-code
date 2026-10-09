@@ -18,14 +18,16 @@ import typer
 from jarvis_code.agent import AgentRuntime, assemble_runtime
 from jarvis_code.agent.loop import RunStatus
 from jarvis_code.agent.memory import save_project_memory
-from jarvis_code.config import ConfigError, Effort, MissingAPIKeyError, load_config
+from jarvis_code.config import ConfigError, Effort, load_config
 from jarvis_code.events import EventBus, InstructionQueue
 from jarvis_code.input import MicController, build_mic_controller
 from jarvis_code.models import ProviderError
 from jarvis_code.permissions import PermissionMode, TerminalPrompter
 from jarvis_code.sandbox import Sandbox, SandboxRootError, resolve_sandbox_root
+from jarvis_code.utils.threads import run_in_daemon_thread
 from jarvis_code.voice import VoiceReporter, VoiceSubsystem, select_engine
 
+from .interrupts import restore_terminal_state, route_sigint, save_terminal_state
 from .keyinput import IdleAction, IdleIntent, read_idle_intent, supports_raw_keys
 from .lineedit import colored_prompt, save_history, setup_line_editing
 from .options import GlobalOptions
@@ -112,6 +114,8 @@ def run_chat(opts: GlobalOptions) -> int:
                 sandbox=sandbox,
                 mode=opts.mode,
                 provider=None,
+                provider_name=opts.provider,  # --provider / --model overrides
+                model=opts.model,
                 prompter=prompter,
                 reporter=reporter,
                 effort=effort,
@@ -119,7 +123,7 @@ def run_chat(opts: GlobalOptions) -> int:
                 bus=bus,
                 asker=asker,
             )
-        except MissingAPIKeyError as exc:
+        except ConfigError as exc:  # missing key, unknown --provider, bad endpoint…
             typer.echo(str(exc), err=True)
             return 1
 
@@ -133,13 +137,20 @@ def run_chat(opts: GlobalOptions) -> int:
         if mic.enabled and supports_raw_keys():
             def key_reader(edit_prompt: str) -> IdleIntent:  # noqa: E731
                 return read_idle_intent(_plain_voice_prompt(), edit_prompt)
+        idle = IdleRead()
         try:
-            await chat_loop(
-                runtime, prompt_fn=_read_line, echo=typer.echo, mic=mic,
-                key_reader=key_reader, steer=steer,
-            )
-            # Persist a concise notes block so the next session has context.
-            if save_project_memory(sandbox, runtime.state) is not None:
+            # Ctrl-C stops the running turn; at the idle prompt it leaves the chat.
+            with route_sigint(runtime, on_idle=idle.cancel):
+                await chat_loop(
+                    runtime, prompt_fn=_read_line, echo=typer.echo, mic=mic,
+                    key_reader=key_reader, steer=steer, idle=idle,
+                )
+            # Persist a concise notes block so the next session has context —
+            # except in plan mode, which is read-only and must not write files.
+            if (
+                runtime.executor.permissions.mode != PermissionMode.PLAN
+                and save_project_memory(sandbox, runtime.state) is not None
+            ):
                 typer.echo(typer.style("  notes saved to JARVIS.md for next time", dim=True))
         finally:
             save_history()
@@ -147,7 +158,38 @@ def run_chat(opts: GlobalOptions) -> int:
                 await voice_sub.aclose()
         return 0
 
-    return asyncio.run(_go())
+    terminal = save_terminal_state()
+    try:
+        return asyncio.run(_go())
+    finally:
+        restore_terminal_state(terminal)
+
+
+class IdleRead:
+    """The in-flight idle prompt read, so Ctrl-C at the prompt can end the chat.
+
+    The read blocks in a daemon thread (``input()`` cannot be cancelled);
+    cancelling the future just stops *waiting* for it, which lets the chat say
+    goodbye and exit instead of hanging until the user presses Enter.
+    """
+
+    def __init__(self) -> None:
+        self.future: asyncio.Future | None = None
+
+    def cancel(self) -> None:
+        if self.future is not None and not self.future.done():
+            self.future.cancel()
+
+
+async def _idle_read(fn: Callable[[str], object], prompt: str, idle: IdleRead | None):
+    future = run_in_daemon_thread(fn, prompt)
+    if idle is not None:
+        idle.future = future
+    try:
+        return await future
+    finally:
+        if idle is not None:
+            idle.future = None
 
 
 def _read_line(prompt: str) -> str:
@@ -159,9 +201,12 @@ def _read_line(prompt: str) -> str:
 
 
 def _short_path(p: Path) -> str:
-    s = str(p)
-    home = str(Path.home())
-    return "~" + s[len(home):] if s.startswith(home) else s
+    """``p`` with the home directory abbreviated to ``~`` (whole components only)."""
+    try:
+        rel = p.relative_to(Path.home())
+    except ValueError:  # not under home (e.g. /home/alice2 vs /home/alice)
+        return str(p)
+    return "~" if str(rel) == "." else f"~/{rel.as_posix()}"
 
 
 def _print_banner(
@@ -211,7 +256,7 @@ def _print_banner(
 
 async def _wait_for_enter() -> None:
     """Block (off the event loop) until the user presses Enter."""
-    await asyncio.to_thread(input, "")
+    await run_in_daemon_thread(input, "")
 
 
 async def _capture_voice(
@@ -256,6 +301,7 @@ async def chat_loop(
     stop_waiter: Callable[[], Awaitable[None]] | None = None,
     key_reader: Callable[[str], IdleIntent] | None = None,
     steer: SteerSession | None = None,
+    idle: IdleRead | None = None,
 ) -> None:
     """The testable core loop.
 
@@ -270,10 +316,12 @@ async def chat_loop(
         _print_command_hints(echo)
         try:
             if key_reader is not None:
-                intent = await asyncio.to_thread(key_reader, _you_prompt())
+                intent = await _idle_read(key_reader, _you_prompt(), idle)
             else:
-                intent = IdleIntent(IdleAction.LINE, await asyncio.to_thread(prompt_fn, _you_prompt()))
-        except EOFError:
+                intent = IdleIntent(
+                    IdleAction.LINE, await _idle_read(prompt_fn, _you_prompt(), idle)
+                )
+        except (EOFError, asyncio.CancelledError):  # Ctrl-D, or Ctrl-C at the prompt
             echo("")
             echo("Bye.")
             return

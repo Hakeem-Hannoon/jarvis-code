@@ -48,6 +48,11 @@ _TRUNCATED_TOOL_NOTE = (
 )
 
 
+# Give up (rather than loop forever on an unlimited-step run) when the model
+# cannot fit a tool call into its response budget this many times in a row.
+_MAX_CONSECUTIVE_TRUNCATIONS = 3
+
+
 class _Interrupted(Exception):
     """The user asked to stop while we were waiting on the model."""
 
@@ -70,7 +75,7 @@ def _result_for_model(result) -> str:
     "exit code 1" alone is useless.
     """
     if result.ok:
-        return result.output
+        return result.output or "(no output)"
     error = result.error or "failed"
     return f"{error}\n{result.output}" if result.output else error
 
@@ -214,6 +219,7 @@ class AgentRuntime:
         # user interrupt). Otherwise cap at max_steps.
         unlimited = self.max_steps is None or self.max_steps <= 0
         steps = itertools.count(1) if unlimited else range(1, self.max_steps + 1)
+        truncations = 0  # consecutive responses cut off mid tool call
         for step in steps:
             self.bus.emit(EventType.AGENT_STEP_STARTED, step=step)
             if not self._checkpoint("before_model_call"):
@@ -267,7 +273,17 @@ class AgentRuntime:
                 # half a file. Don't — tell the model to send smaller pieces.
                 self._skip_tool_calls(response, _TRUNCATED_TOOL_NOTE)
                 self.bus.emit(EventType.AGENT_STEP_FINISHED, step=step)
+                truncations += 1
+                if truncations >= _MAX_CONSECUTIVE_TRUNCATIONS:
+                    msg = (
+                        "The model keeps hitting its output-token limit before finishing "
+                        "a tool call. Try a higher --effort (larger response budget) or "
+                        "ask for the work in smaller pieces."
+                    )
+                    self.session.error(msg)
+                    return RunResult(RunStatus.ERROR, msg, step, self.state)
                 continue
+            truncations = 0
 
             self.in_tool_section = True
             try:

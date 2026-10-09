@@ -43,6 +43,19 @@ def _arg_summary(args: dict) -> str:
     return ""
 
 
+def _result_for_model(result) -> str:
+    """What the model is shown for a tool result.
+
+    A failure keeps its output: a failing test run or compiler error exits
+    non-zero, and the output *is* the information the model needs to fix it —
+    "exit code 1" alone is useless.
+    """
+    if result.ok:
+        return result.output
+    error = result.error or "failed"
+    return f"{error}\n{result.output}" if result.output else error
+
+
 class RunStatus(str, Enum):
     COMPLETE = "complete"
     MAX_STEPS = "max_steps"
@@ -216,8 +229,7 @@ class AgentRuntime:
 
             result = outcome.result
             assert result is not None
-            shown = result.output if result.ok else (result.error or "failed")
-            self.context.add_tool_result(tc.id, tc.name, shown)
+            self.context.add_tool_result(tc.id, tc.name, _result_for_model(result))
             self.session.tool_result(
                 tc.name, result.ok, result.output, result.error, result.metadata
             )

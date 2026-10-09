@@ -10,7 +10,18 @@ import re
 
 from .types import InstructionKind
 
-_HARD = re.compile(r"\b(stop( now| everything)?|abort|halt|kill it|cancel everything)\b", re.I)
+# A hard interrupt is a *command to stop*, not any sentence containing the word:
+# "don't stop the dev server" or "add an abort button" is steering. So the stop
+# word must lead the message and be followed only by filler ("stop now",
+# "stop doing that") or punctuation ("stop, that's wrong").
+_STOP_WORD = r"(?:stop|abort|halt|cancel|kill it)"
+_STOP_FILLER = (
+    r"(?:now|it|that|this|everything|all|please|right|immediately|jarvis|doing|working|running)"
+)
+_HARD = re.compile(
+    rf"^\s*(?:please\s+|jarvis[,\s]+)?{_STOP_WORD}(?:\s+{_STOP_FILLER})*\s*(?:[.!,;:\-—].*)?$",
+    re.I | re.S,
+)
 _SOFT = re.compile(r"\b(wait|hold on|hang on|pause|one sec|hold up|actually)\b", re.I)
 _PERMISSION_YES = re.compile(r"^\s*(1|y|yes|yeah|yep|approve|approved|go ahead|do it|sure|ok|okay)\s*$", re.I)
 _PERMISSION_NO = re.compile(r"^\s*(2|n|no|nope|deny|denied|don'?t|stop that)\s*$", re.I)
@@ -21,7 +32,7 @@ def classify(text: str) -> InstructionKind:
     t = text.strip()
     if not t:
         return InstructionKind.STEERING
-    if _HARD.search(t):
+    if _HARD.match(t):
         return InstructionKind.HARD_INTERRUPT
     if _SOFT.search(t):
         return InstructionKind.SOFT_INTERRUPT

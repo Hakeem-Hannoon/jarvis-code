@@ -72,9 +72,12 @@ def _request_body_lines(request: PermissionRequest) -> list[str]:
     return lines
 
 
+CHOICES_LINE = "  1) Yes   2) No   3) Do Something Else"
+
+
 def render_request(request: PermissionRequest) -> str:
     """Render the approval block with the typed 1/2/3 choices line."""
-    return "\n".join(_request_body_lines(request) + ["  1) Yes   2) No   3) Do Something Else"])
+    return "\n".join(_request_body_lines(request) + [CHOICES_LINE])
 
 
 # Menu options in order, paired with the choice they produce.
@@ -130,6 +133,15 @@ class TerminalPrompter:
             _stdin_is_interactive(input_fn) if interactive is None else interactive
         )
 
+    def body_lines(self, request: PermissionRequest) -> list[str]:
+        """The lines describing the request (override to restyle the block).
+
+        Whatever the styling, it must show what the invariants require: the
+        command, working dir, why, expected effect and risk for shell; the diff
+        for file changes.
+        """
+        return _request_body_lines(request)
+
     def request_permission(self, request: PermissionRequest) -> PermissionResponse:
         if self._interactive:
             resp = self._arrow_menu(request)
@@ -140,7 +152,7 @@ class TerminalPrompter:
     # -- typed fallback (also what tests exercise) -------------------------
 
     def _typed_menu(self, request: PermissionRequest) -> PermissionResponse:
-        self._output(render_request(request))
+        self._output("\n".join([*self.body_lines(request), CHOICES_LINE]))
         try:
             while True:
                 raw = self._input("Choose [1/2/3]: ").strip().lower()
@@ -174,8 +186,8 @@ class TerminalPrompter:
             return None
 
         out = sys.stdout
-        self._output("\n".join(_request_body_lines(request)))
-        self._output("  Use ↑/↓ (or 1/2/3), Enter to confirm:")
+        self._output("\n".join(self.body_lines(request)))
+        self._output("\x1b[2m  ↑/↓ or 1/2/3 · Enter to confirm · Esc to deny\x1b[0m")
 
         idx = 0
 
@@ -219,7 +231,10 @@ class TerminalPrompter:
             out.flush()
 
         label, choice = _MENU[idx]
-        out.write(f"  → {label}\n")
+        # Collapse the menu to the one line that records what was chosen.
+        out.write(f"\x1b[{len(_MENU) + 1}A\x1b[J")
+        color = {Choice.YES: "32", Choice.NO: "31"}.get(choice, "33")
+        out.write(f"  \x1b[1;{color}m→ {label}\x1b[0m\n")
         out.flush()
         if choice == Choice.SOMETHING_ELSE:
             try:

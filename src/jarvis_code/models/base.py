@@ -8,6 +8,7 @@ headers — it is never written into messages or any object the model can see.
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Protocol, runtime_checkable
 
 import httpx
@@ -61,6 +62,17 @@ def _retry_delay(attempt: int, response: httpx.Response | None) -> float:
         except ValueError:
             pass
     return float(min(8, 2 ** (attempt - 1)))  # 1s, 2s, 4s
+
+
+def new_call_id() -> str:
+    """A conversation-unique tool-call id for providers that don't supply one.
+
+    Ids must be unique across the whole conversation: Anthropic rejects a
+    history in which two tool calls share an id, which is exactly what
+    positional ids ("call_0", "call_1", … every turn) produce once a session
+    switches from Gemini to another provider.
+    """
+    return f"call_{uuid.uuid4().hex[:16]}"
 
 
 def as_arguments(value: object) -> dict:

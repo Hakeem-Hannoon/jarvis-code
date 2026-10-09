@@ -268,6 +268,7 @@ def test_screening_does_not_refuse_harmless_commands(command: str) -> None:
         "cd /tmp && rm -rf ~",
         "echo hi\nrm -rf /",
         "sh -c 'rm -rf /'",
+        'bash -lc "rm -rf ~"',
         "FOO=1 rm --recursive --force /",
         "shutdown -h now",
         "ls; sudo reboot",

@@ -73,6 +73,7 @@ _WRAPPER_VALUE_OPTS = {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "-n
 _SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 _SEPARATORS = set(";&|()")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_DASH_C = re.compile(r"^-[A-Za-z]*c$")
 
 
 def _simple_commands(line: str) -> list[list[str]]:
@@ -142,10 +143,10 @@ def _screen_simple(words: list[str], depth: int) -> str | None:
         # `sh -c '<script>'` / `eval '<script>'`: screen the nested script too.
         if program == "eval":
             nested = [" ".join(args)]
-        elif "-c" in args:
-            nested = args[args.index("-c") + 1 :][:1]
         else:
-            nested = []
+            # `-c`, or a flag cluster ending in c (`bash -lc '…'`, `sh -ec '…'`).
+            flag = next((i for i, a in enumerate(args) if _DASH_C.match(a)), None)
+            nested = args[flag + 1 :][:1] if flag is not None else []
         for script in nested:
             reason = _screen_text(script, depth + 1)
             if reason:

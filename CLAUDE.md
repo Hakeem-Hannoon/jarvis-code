@@ -138,5 +138,11 @@ All phases (0–11) complete:
   "yes" never approves — approvals are always shown first); 10 sub-agent
   orchestration (clamped perms, summary-only); 11 docs + final doctor.
 
+Live switching: `agent/controls.py` (`runtime.controls`) is the ONE place that
+changes model/provider/effort/mode on a running session — it updates every piece
+that bakes the setting in (provider, tool registry, system prompt, sub-agent
+ceiling). CLI commands (`cli/settings.py`) are thin wrappers; never set
+`permissions.mode` or `runtime.provider` directly.
+
 Test command: `pytest -q` (must stay green). See `docs/` for deeper notes and
 `instructions.txt` for the original phase plan.

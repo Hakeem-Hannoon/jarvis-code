@@ -146,6 +146,7 @@ class SubAgentOrchestrator:
             max_steps=self.max_steps,
             bus=self.bus,
             interrupt=self.interrupt,
+            shares_interrupt=self.interrupt is not None,
         )
 
     def _summarize(self, agent_type: str, result) -> str:

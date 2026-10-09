@@ -109,6 +109,7 @@ class AgentRuntime:
         instructions: InstructionQueue | None = None,
         bus: EventBus | None = None,
         interrupt: threading.Event | None = None,
+        shares_interrupt: bool = False,
     ) -> None:
         self.provider = provider
         self.executor = executor
@@ -122,9 +123,10 @@ class AgentRuntime:
         self._aborted = False  # set by a hard interrupt
         self._abort_reason = ""
         # Set (from any thread or a signal handler) to stop the current turn: the
-        # CLI's Ctrl-C handler sets it. A sub-agent shares its parent's event so
-        # one Ctrl-C stops the whole tree; only the owner resets it per turn.
-        self._owns_interrupt = interrupt is None
+        # CLI's Ctrl-C handler sets it. A sub-agent shares its parent's event
+        # (``shares_interrupt``) so one Ctrl-C stops the whole tree; only the
+        # owner resets it at the start of each turn.
+        self._owns_interrupt = not shares_interrupt
         self.interrupt = interrupt if interrupt is not None else threading.Event()
         #: True while a turn is running (``run`` has not returned yet).
         self.busy = False
@@ -408,6 +410,8 @@ def assemble_runtime(
     effort: Effort = Effort.MEDIUM,
     max_steps: object = _UNSET_STEPS,
     asker: object | None = None,
+    provider_name: str | None = None,
+    model: str | None = None,
 ) -> AgentRuntime:
     """Wire up a runtime. ``provider`` may be injected (tests); else built from config.
 
@@ -415,6 +419,8 @@ def assemble_runtime(
     and a system-prompt reasoning nudge. An explicit ``max_steps`` overrides the
     effort profile's ceiling. ``asker`` (a ``str -> str | None`` callable) enables
     the ``ask_user`` clarification tool when an interactive user is present.
+    ``provider_name`` / ``model`` are the ``--provider`` / ``--model`` overrides
+    of the config's default provider and that provider's configured model.
     """
     profile = profile_for(effort)
     steps = profile.max_steps if max_steps is _UNSET_STEPS else max_steps  # type: ignore[assignment]
@@ -426,7 +432,13 @@ def assemble_runtime(
     )
     permissions = PermissionManager(mode, prompter=prompter)
     if provider is None:
-        provider = build_provider(config, http_client=http_client, max_tokens=profile.max_tokens)
+        provider = build_provider(
+            config,
+            provider=provider_name,
+            model=model,
+            http_client=http_client,
+            max_tokens=profile.max_tokens,
+        )
     if session is None:
         session = SessionWriter(sandbox)
 

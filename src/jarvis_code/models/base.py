@@ -7,6 +7,7 @@ headers — it is never written into messages or any object the model can see.
 
 from __future__ import annotations
 
+import time
 from typing import Protocol, runtime_checkable
 
 import httpx
@@ -20,6 +21,46 @@ _log = get_logger("models")
 
 class ProviderError(Exception):
     """A provider call failed (transport or API error). Never carries a key."""
+
+
+# Transient failures worth retrying: rate limits, overload, gateway hiccups.
+_RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 529}
+_MAX_ATTEMPTS = 4
+_MAX_RETRY_AFTER = 30.0
+
+# One-line hints for the statuses a user can actually act on.
+_STATUS_HINTS = {
+    401: "the API key was rejected — check it in your config or environment",
+    403: "this key is not allowed to use that model or endpoint",
+    404: "model or endpoint not found — check the model name (--model) and endpoint",
+    413: "the request is too large — try /compress to shrink the conversation",
+    429: "rate limited — wait a moment, or check your plan's limits",
+    529: "the provider is overloaded — try again shortly",
+}
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """The human message inside an API error body (falls back to the raw text)."""
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    for candidate in (data, data.get("error") if isinstance(data, dict) else None):
+        if isinstance(candidate, dict) and isinstance(candidate.get("message"), str):
+            return candidate["message"]
+    if isinstance(data, dict) and isinstance(data.get("error"), str):
+        return data["error"]
+    return response.text.strip()[:500]
+
+
+def _retry_delay(attempt: int, response: httpx.Response | None) -> float:
+    """Seconds to wait before retry ``attempt`` (1-based); honors Retry-After."""
+    if response is not None:
+        try:
+            return max(0.0, min(_MAX_RETRY_AFTER, float(response.headers.get("retry-after", ""))))
+        except ValueError:
+            pass
+    return float(min(8, 2 ** (attempt - 1)))  # 1s, 2s, 4s
 
 
 def as_arguments(value: object) -> dict:
@@ -100,17 +141,7 @@ class HTTPProvider:
         self, messages: list[Message], tools: list[ToolSpec] | None = None
     ) -> ModelResponse:
         method, url, headers, body = self._build_request(messages, tools)
-        try:
-            response = self._client.request(method, url, headers=headers, json=body)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            # redact() scrubs any registered key just in case it appears in text.
-            msg = redact(f"{self.name} API error {exc.response.status_code}: {exc.response.text}")
-            _log.warning("%s", msg)
-            raise ProviderError(msg) from exc
-        except httpx.HTTPError as exc:
-            msg = redact(f"{self.name} transport error: {exc}")
-            raise ProviderError(msg) from exc
+        response = self._send(method, url, headers, body)
         try:
             data = response.json()
         except ValueError as exc:  # a 200 with an HTML/empty body (proxy, gateway…)
@@ -121,3 +152,46 @@ class HTTPProvider:
         if not isinstance(data, dict):
             raise ProviderError(f"{self.name} returned an unexpected response shape.")
         return self._parse_response(data)
+
+    # Injectable so tests don't actually wait out a backoff.
+    _sleep = staticmethod(time.sleep)
+
+    def _send(self, method: str, url: str, headers: dict, body: dict) -> httpx.Response:
+        """Send the request, retrying transient failures with backoff.
+
+        One overloaded/rate-limited response or a dropped connection should not
+        end the user's turn. A read *timeout* is not retried: the request already
+        waited the full (minutes-long) timeout once.
+        """
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            last = attempt == _MAX_ATTEMPTS
+            try:
+                response = self._client.request(method, url, headers=headers, json=body)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError,
+                    httpx.ReadError, httpx.WriteError) as exc:
+                if last:
+                    raise ProviderError(
+                        redact(f"{self.name} connection failed after {attempt} attempts: {exc}")
+                    ) from exc
+                _log.info("%s connection error (%s); retrying", self.name, type(exc).__name__)
+                self._sleep(_retry_delay(attempt, None))
+                continue
+            except httpx.HTTPError as exc:
+                raise ProviderError(redact(f"{self.name} transport error: {exc}")) from exc
+
+            if response.status_code < 400:
+                return response
+            if response.status_code in _RETRY_STATUS and not last:
+                _log.info("%s returned %s; retrying", self.name, response.status_code)
+                self._sleep(_retry_delay(attempt, response))
+                continue
+            # redact() scrubs any registered key just in case it appears in text.
+            status = response.status_code
+            msg = f"{self.name} API error {status}: {_error_detail(response)}"
+            hint = _STATUS_HINTS.get(status)
+            if hint:
+                msg += f"\n  hint: {hint}"
+            msg = redact(msg)
+            _log.debug("%s", msg)
+            raise ProviderError(msg)
+        raise ProviderError(f"{self.name} request failed.")  # pragma: no cover

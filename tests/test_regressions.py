@@ -986,3 +986,56 @@ async def test_approval_request_is_announced_by_voice(sandbox: Sandbox) -> None:
     await vs.aclose()
     assert "Awaiting your authorization to run pytest, sir." in engine.spoken
     assert not any("secret" in line for line in engine.spoken)  # program name only
+
+
+# -- provider resilience -------------------------------------------------------
+
+
+def _flaky_client(statuses: list[int], seen: list):
+    import httpx
+
+    queue = list(statuses)
+
+    def handler(request):
+        seen.append(request)
+        status = queue.pop(0)
+        if status == 200:
+            return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}]})
+        return httpx.Response(status, json={"type": "error", "error": {"message": "overloaded"}})
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_transient_api_errors_are_retried() -> None:
+    from jarvis_code.models import Message, build_provider
+
+    seen: list = []
+    provider = build_provider(_provider_config("anthropic"), http_client=_flaky_client([529, 429, 200], seen))
+    provider._sleep = lambda _s: None  # no real backoff in tests
+    assert provider.complete([Message.user("hi")]).text == "ok"
+    assert len(seen) == 3  # one overloaded reply used to end the turn
+
+
+def test_permanent_api_errors_are_not_retried_and_read_cleanly() -> None:
+    from jarvis_code.models import Message, ProviderError, build_provider
+
+    seen: list = []
+    provider = build_provider(_provider_config("anthropic"), http_client=_flaky_client([401], seen))
+    provider._sleep = lambda _s: None
+    with pytest.raises(ProviderError) as exc:
+        provider.complete([Message.user("hi")])
+    assert len(seen) == 1
+    text = str(exc.value)
+    assert "401" in text and "overloaded" in text  # the message, not a JSON blob
+    assert "{" not in text and "API key was rejected" in text
+
+
+def test_retries_give_up_eventually() -> None:
+    from jarvis_code.models import Message, ProviderError, build_provider
+
+    seen: list = []
+    provider = build_provider(_provider_config("anthropic"), http_client=_flaky_client([503] * 9, seen))
+    provider._sleep = lambda _s: None
+    with pytest.raises(ProviderError):
+        provider.complete([Message.user("hi")])
+    assert len(seen) == 4

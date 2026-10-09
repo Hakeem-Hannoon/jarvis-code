@@ -580,3 +580,173 @@ def test_typed_approval_fails_closed_when_stdin_is_closed() -> None:
         PermissionRequest(tool_name="run_shell", capability=Capability.SHELL, summary="x")
     )
     assert resp.choice is Choice.NO  # used to crash with an EOFError traceback
+
+
+async def test_endless_truncation_gives_up_instead_of_looping(sandbox: Sandbox) -> None:
+    cut_off = ModelResponse(
+        tool_calls=[ToolCall("c", "write_file", {"path": "big.txt"})], stop_reason="length"
+    )
+    provider = ScriptedProvider([cut_off] * 10)
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.DANGEROUS, provider=provider
+    )
+    result = await runtime.run("write a big file")
+    assert result.status is RunStatus.ERROR
+    assert len(provider.calls) == 3  # bounded, even though steps are unlimited
+    assert "output-token limit" in result.final_text
+
+
+# -- providers ----------------------------------------------------------------
+
+
+def _capture_client(captured: list, response_json: dict):
+    import httpx
+
+    def handler(request):
+        captured.append(request)
+        return httpx.Response(200, json=response_json)
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def _provider_config(name: str, **extra) -> JarvisConfig:
+    return JarvisConfig.model_validate(
+        {
+            "default_provider": name,
+            "providers": {name: {"api_key": "sk-test-000000", "model": "m", **extra}},
+        }
+    )
+
+
+def _parallel_tool_conversation():
+    from jarvis_code.models import Message
+
+    return [
+        Message.user("go"),
+        Message.assistant("", [ToolCall("call_0", "list_files", {}), ToolCall("call_1", "git_status", {})]),
+        Message.tool_result("call_0", "list_files", "a.txt"),
+        Message.tool_result("call_1", "git_status", ""),
+    ]
+
+
+def test_gemini_answers_parallel_calls_in_one_turn() -> None:
+    from jarvis_code.models.gemini_style import _messages_to_gemini
+
+    _, contents = _messages_to_gemini(_parallel_tool_conversation())
+    # One model turn with 2 functionCalls must be answered by ONE user turn with
+    # 2 functionResponses (a turn per result is rejected by the API).
+    assert [(c["role"], len(c["parts"])) for c in contents] == [("user", 1), ("model", 2), ("user", 2)]
+
+
+def test_gemini_omits_parameters_for_no_argument_tools() -> None:
+    from jarvis_code.models.gemini_style import _tools_to_gemini
+
+    decls = _tools_to_gemini(build_default_registry().specs())[0]["functionDeclarations"]
+    by_name = {d["name"]: d for d in decls}
+    assert "parameters" not in by_name["git_status"]  # an empty OBJECT schema is a 400
+    assert "parameters" in by_name["read_file"]
+
+
+def test_gemini_round_trips_the_thought_signature() -> None:
+    import json
+
+    from jarvis_code.models import Message, build_provider
+    from jarvis_code.models.gemini_style import _messages_to_gemini
+
+    captured: list = []
+    reply = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"text": "hidden reasoning", "thought": True},
+                        {"functionCall": {"name": "list_files", "args": {}}, "thoughtSignature": "SIG"},
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+    provider = build_provider(_provider_config("gemini"), http_client=_capture_client(captured, reply))
+    response = provider.complete([Message.user("hi")])
+    assert response.text == ""  # thought parts are not the reply
+    call = response.tool_calls[0]
+    _, contents = _messages_to_gemini([Message.assistant("", [call])])
+    assert contents[0]["parts"][0]["thoughtSignature"] == "SIG"
+    assert "generationConfig" not in json.loads(captured[0].content)
+
+
+def test_anthropic_groups_tool_results_and_skips_empty_turns() -> None:
+    from jarvis_code.models import Message
+    from jarvis_code.models.anthropic import _messages_to_anthropic
+
+    convo = [*_parallel_tool_conversation(), Message.assistant(""), Message.user("next")]
+    _, msgs = _messages_to_anthropic(convo)
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user", "user"]
+    results = msgs[2]["content"]
+    assert [b["tool_use_id"] for b in results] == ["call_0", "call_1"]
+    assert results[1]["content"] == "(no output)"  # never an empty content block
+    assert all(m["content"] != "" for m in msgs)  # the empty assistant turn is gone
+
+
+@pytest.mark.parametrize(
+    "name,extra,field",
+    [
+        ("openai", {}, "max_completion_tokens"),  # reasoning models 400 on max_tokens
+        ("openai", {"endpoint": "http://localhost:11434/v1"}, "max_tokens"),
+        ("deepseek", {}, "max_tokens"),
+    ],
+)
+def test_openai_style_budget_parameter(name: str, extra: dict, field: str) -> None:
+    import json
+
+    from jarvis_code.models import Message, build_provider
+
+    captured: list = []
+    reply = {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
+    provider = build_provider(
+        _provider_config(name, **extra), http_client=_capture_client(captured, reply)
+    )
+    provider.complete([Message.user("hi")])
+    body = json.loads(captured[0].content)
+    assert field in body
+    assert ("max_tokens" in body) != ("max_completion_tokens" in body)
+
+
+def test_non_json_response_is_a_provider_error() -> None:
+    import httpx
+
+    from jarvis_code.models import Message, ProviderError, build_provider
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, text="<html>gateway</html>"))
+    )
+    provider = build_provider(_provider_config("anthropic"), http_client=client)
+    with pytest.raises(ProviderError):
+        provider.complete([Message.user("hi")])
+
+
+def test_tool_arguments_that_are_not_an_object_become_empty() -> None:
+    from jarvis_code.models import Message, build_provider
+
+    reply = {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {"id": "x", "function": {"name": "read_file", "arguments": "[1, 2]"}}
+                    ]
+                }
+            }
+        ]
+    }
+    provider = build_provider(_provider_config("deepseek"), http_client=_capture_client([], reply))
+    assert provider.complete([Message.user("hi")]).tool_calls[0].arguments == {}
+
+
+def test_azure_without_an_endpoint_is_a_clear_config_error() -> None:
+    from jarvis_code.config import ConfigError
+    from jarvis_code.models import build_provider
+
+    with pytest.raises(ConfigError, match="endpoint"):
+        build_provider(_provider_config("azure"))

@@ -22,6 +22,15 @@ class ProviderError(Exception):
     """A provider call failed (transport or API error). Never carries a key."""
 
 
+def as_arguments(value: object) -> dict:
+    """Tool-call arguments as a dict; anything else (list, string, null) is ``{}``.
+
+    Providers occasionally return non-object "arguments". The runtime then
+    reports the missing required argument back to the model instead of crashing.
+    """
+    return value if isinstance(value, dict) else {}
+
+
 @runtime_checkable
 class ModelProvider(Protocol):
     name: str
@@ -102,4 +111,13 @@ class HTTPProvider:
         except httpx.HTTPError as exc:
             msg = redact(f"{self.name} transport error: {exc}")
             raise ProviderError(msg) from exc
-        return self._parse_response(response.json())
+        try:
+            data = response.json()
+        except ValueError as exc:  # a 200 with an HTML/empty body (proxy, gateway…)
+            snippet = redact(response.text[:200])
+            raise ProviderError(
+                f"{self.name} returned a non-JSON response: {snippet!r}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise ProviderError(f"{self.name} returned an unexpected response shape.")
+        return self._parse_response(data)

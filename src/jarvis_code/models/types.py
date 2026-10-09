@@ -25,6 +25,9 @@ class ToolCall:
     id: str
     name: str
     arguments: dict = field(default_factory=dict)
+    # Opaque provider data that must be echoed back with the call (e.g. Gemini's
+    # ``thoughtSignature``). Never shown to the user or put in a transcript.
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass

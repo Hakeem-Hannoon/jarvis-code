@@ -8,12 +8,16 @@ DEFAULT_CONFIG_TEMPLATE = """\
 # api_key blank and export the matching env var (e.g. ANTHROPIC_API_KEY).
 # Env vars always override file values. This file lives under .jarvis/ which is
 # git-ignored by default, so it is safe to put keys here.
+#
+# In the chat, /model /provider /effort switch on the fly, and /save writes your
+# choice back here as the default (changing only those values).
 
 default_provider = "anthropic"
 
 [providers.anthropic]
 api_key = ""                                  # or set ANTHROPIC_API_KEY
 model = "claude-opus-4-8"
+# models = ["another-model-id"]              # optional favourites for the /model picker
 
 [providers.openai]
 api_key = ""                                  # or set OPENAI_API_KEY

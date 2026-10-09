@@ -405,7 +405,7 @@ def turn_stats(result: RunResult) -> str:
     return " · ".join(parts)
 
 
-def print_turn_footer(result: RunResult, echo: Echo = typer.echo) -> None:
+def print_turn_footer(result: RunResult, echo: Echo = typer.echo, *, model: str = "") -> None:
     """One or two quiet lines closing a turn: outcome, stats, files changed.
 
     A turn that did not complete says *why* — an API error used to surface in
@@ -413,8 +413,12 @@ def print_turn_footer(result: RunResult, echo: Echo = typer.echo) -> None:
     """
     mark, color = _STATUS_STYLE[result.status]
     echo("")
+    stats = turn_stats(result)
+    if model:
+        # Which model answered: worth a glance once switching is one command away.
+        stats += f" · {sanitize_terminal(model)}"
     if result.status is RunStatus.COMPLETE:
-        echo(typer.style(f"  {mark} ", fg=color) + _dim(turn_stats(result)))
+        echo(typer.style(f"  {mark} ", fg=color) + _dim(stats))
     else:
         label = {
             RunStatus.ERROR: "error",
@@ -431,7 +435,7 @@ def print_turn_footer(result: RunResult, echo: Echo = typer.echo) -> None:
         echo(typer.style(head, fg=color, bold=True))
         for line in rest:
             echo(typer.style("    " + line.strip(), fg=color))
-        echo(_dim("    " + turn_stats(result)))
+        echo(_dim("    " + stats))
     changed = list(getattr(result, "files_changed", ()) or ())
     if changed:
         shown = ", ".join(sanitize_terminal(f) for f in changed[:6])

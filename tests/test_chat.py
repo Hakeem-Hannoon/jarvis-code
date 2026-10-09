@@ -274,7 +274,7 @@ async def test_chat_command_hints_shown_once_not_before_every_prompt() -> None:
     out: list[str] = []
     rt = FakeRuntime()
     await chat_loop(rt, prompt_fn=_prompt_from(["one", "two", "three", "/exit"]), echo=out.append)
-    assert sum("/compress" in o for o in out) == 1  # shown under the banner, once
+    assert sum("/model" in o for o in out) == 1  # shown under the banner, once
 
 
 @pytest.mark.asyncio

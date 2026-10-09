@@ -32,7 +32,17 @@ from .interrupts import restore_terminal_state, route_sigint, save_terminal_stat
 from .keyinput import IdleAction, IdleIntent, read_idle_intent, supports_raw_keys
 from .lineedit import colored_prompt, save_history, setup_line_editing
 from .options import GlobalOptions
-from .run import _DANGEROUS_WARNING, _MADMAX_HEADSUP, resolve_effort
+from .run import _MADMAX_HEADSUP, resolve_effort, resolve_model_flags
+from .settings import (
+    DANGEROUS_WARNING,
+    MODE_COLOR,
+    handle_effort,
+    handle_mode,
+    handle_model,
+    handle_provider,
+    handle_save,
+    install_completer,
+)
 from .steer import (
     PausingQueuePrompter,
     SteerSession,
@@ -46,12 +56,26 @@ _TALK = {"/talk", "/ptt"}
 _COMPRESS = {"/compress", "/compact"}
 
 # A dim line of key commands, shown once under the banner.
-_PROMPT_HINTS = "/help · /status · /compress · /mode · /talk · /exit"
+_PROMPT_HINTS = (
+    "/model · /provider · /effort · /mode to switch (Tab completes)   ·   /save keeps it   ·   /help"
+)
+
+# Commands that take one value, or open a picker when given none.
+_SWITCHES = {
+    "/model": handle_model,
+    "/provider": handle_provider,
+    "/effort": handle_effort,
+    "/mode": handle_mode,
+}
 
 _COMMANDS = [
     ("/help", "show this help"),
-    ("/status", "mode, model, sandbox and how full the context is"),
-    ("/mode plan|auto|dangerous", "switch permission mode for the rest of the session"),
+    ("/status", "mode, model, effort, sandbox and how full the context is"),
+    ("/model [name]", "switch model — bare opens a picker; openai/gpt-5 switches provider too"),
+    ("/provider [name]", "switch provider (uses the model configured for it)"),
+    ("/effort [level]", "low | medium | high | madmax"),
+    ("/mode [mode]", "plan | auto | dangerous"),
+    ("/save", "make the current provider, model and effort the default"),
     ("/compress (/compact)", "compact the conversation now to free up context space"),
     ("/clear", "forget the conversation so far and start fresh"),
     ("/sandbox", "show the current sandbox root"),
@@ -141,14 +165,15 @@ def run_chat(opts: GlobalOptions) -> int:
         )
         # ask_user reads a line from the terminal, pausing the steering reader.
         asker = make_console_asker(steer.prompt_active)
+        provider_name, model = resolve_model_flags(opts, config)
         try:
             runtime = assemble_runtime(
                 config=config,
                 sandbox=sandbox,
                 mode=opts.mode,
                 provider=None,
-                provider_name=opts.provider,  # --provider / --model overrides
-                model=opts.model,
+                provider_name=provider_name,  # --provider / --model overrides
+                model=model,
                 prompter=prompter,
                 reporter=reporter,
                 effort=effort,
@@ -163,6 +188,12 @@ def run_chat(opts: GlobalOptions) -> int:
             return 1
 
         setup_line_editing()
+        install_completer(lambda: runtime)  # Tab completes commands, models, modes…
+        # Learn the provider's model list in the background so Tab and the
+        # /model picker are instant. Best effort; never blocks or fails startup.
+        threading.Thread(
+            target=runtime.controls.fetch_models, daemon=True, name="jarvis-models"
+        ).start()
         _print_banner(
             opts.mode, root, mic, voice_on=voice_on, engine_label=engine_label,
             effort=effort, model=_model_label(runtime),
@@ -255,13 +286,6 @@ def _model_label(runtime: object) -> str:
     return " · ".join(part for part in (name, model) if part)
 
 
-_MODE_COLOR = {
-    PermissionMode.PLAN: typer.colors.GREEN,
-    PermissionMode.AUTO: typer.colors.CYAN,
-    PermissionMode.DANGEROUS: typer.colors.RED,
-}
-
-
 def _print_banner(
     mode: PermissionMode,
     root: Path,
@@ -281,13 +305,13 @@ def _print_banner(
     )
     typer.echo("")
     if mode == PermissionMode.DANGEROUS:
-        typer.echo(typer.style("  " + _DANGEROUS_WARNING, fg=c.RED, bold=True))
+        typer.echo(typer.style("  " + DANGEROUS_WARNING, fg=c.RED, bold=True))
 
     # Mode + effort as prominent coloured chips so the user always knows the
     # posture the agent is running under (mode colour ranks plan→auto→dangerous).
     chips = (
         "  "
-        + typer.style(f" MODE: {mode.value} ", fg=c.BLACK, bg=_MODE_COLOR[mode], bold=True)
+        + typer.style(f" MODE: {mode.value} ", fg=c.BLACK, bg=MODE_COLOR[mode], bold=True)
         + "  "
         + typer.style(f" EFFORT: {effort.value} ", fg=c.BLACK, bg=c.WHITE, bold=True)
     )
@@ -418,8 +442,12 @@ async def chat_loop(
         if message in _COMPRESS:
             _handle_compress(runtime, echo)
             continue
-        if message.startswith("/mode"):
-            _handle_mode(runtime, message, echo)
+        command, _, argument = message.partition(" ")
+        if command in _SWITCHES:
+            _SWITCHES[command](runtime, argument, echo)
+            continue
+        if command == "/save":
+            handle_save(runtime, echo)
             continue
         if message in _TALK:
             spoken = await _capture_voice(mic, echo, waiter)
@@ -455,7 +483,7 @@ async def _run_message(
     finally:
         if steer is not None:
             steer.stop()
-    _print_turn_footer(result, echo)
+    _print_turn_footer(result, echo, model=getattr(getattr(runtime, "provider", None), "model", ""))
 
 
 def _handle_mic(mic: MicController | None, echo: Callable[[str], None]) -> None:
@@ -485,9 +513,11 @@ def _handle_status(runtime: AgentRuntime, echo: Callable[[str], None]) -> None:
     filled = round(pct / 5)
     bar = "█" * filled + "░" * (20 - filled)
     color = typer.colors.GREEN if pct < 70 else typer.colors.YELLOW if pct < 90 else typer.colors.RED
+    controls = getattr(runtime, "controls", None)
     rows = [
         ("mode", runtime.executor.permissions.mode.value),
         ("model", _model_label(runtime) or "(unknown)"),
+        *([("effort", controls.settings.effort.value)] if controls is not None else []),
         ("sandbox", str(runtime.executor.ctx.sandbox.root)),
         ("messages", str(len(ctx.messages))),
     ]
@@ -524,21 +554,6 @@ def _plain_voice_prompt() -> str:
     return typer.style("you 🎙 ❯ ", fg=typer.colors.CYAN, bold=True)
 
 
-def _handle_mode(runtime: AgentRuntime, message: str, echo: Callable[[str], None]) -> None:
-    parts = message.split()
-    valid = {m.value for m in PermissionMode}
-    if len(parts) != 2 or parts[1] not in valid:
-        echo("usage: /mode plan|auto|dangerous")
-        return
-    new_mode = PermissionMode(parts[1])
-    runtime.executor.permissions.mode = new_mode
-    if new_mode == PermissionMode.DANGEROUS:
-        echo(typer.style("  " + _DANGEROUS_WARNING, fg=typer.colors.RED, bold=True))
-    # Tell the model about the change so its self-description stays accurate.
-    runtime.context.add_user(f"[mode changed to {new_mode.value}]")
-    echo("  mode → " + typer.style(f" {new_mode.value} ", fg=typer.colors.BLACK, bg=_MODE_COLOR[new_mode], bold=True))
-
-
-def _print_turn_footer(result, echo: Callable[[str], None]) -> None:
+def _print_turn_footer(result, echo: Callable[[str], None], *, model: str = "") -> None:
     """Close a turn: outcome (with the reason if it failed), stats, files changed."""
-    print_turn_footer(result, echo)
+    print_turn_footer(result, echo, model=model)

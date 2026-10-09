@@ -179,3 +179,55 @@ def test_read_file_offset_past_the_end_is_an_error(executor) -> None:
     out = executor.execute("read_file", {"path": "a.txt", "offset": 50})
     assert out.result is not None and not out.result.ok
     assert "past the end" in (out.result.error or "")
+
+
+# -- search -------------------------------------------------------------------
+
+
+def _executor_at(path: Path) -> ToolExecutor:
+    return ToolExecutor(
+        build_default_registry(),
+        PermissionManager(PermissionMode.PLAN),
+        ToolContext(sandbox=Sandbox(path)),
+    )
+
+
+def test_search_works_when_the_sandbox_lives_under_a_skipped_dir_name(tmp_path: Path) -> None:
+    # The skip list (venv, node_modules, ...) used to match against the ABSOLUTE
+    # path, so a project anywhere below a dir named "venv" searched nothing.
+    proj = tmp_path / "venv" / "proj"
+    proj.mkdir(parents=True)
+    (proj / "x.py").write_text("needle = 1\n")
+    ex = _executor_at(proj)
+    assert ex.execute("search_files", {"pattern": "*.py"}).result.output == "x.py"
+    assert "x.py:1:" in ex.execute("grep_text", {"pattern": "needle"}).result.output
+
+
+def test_search_still_skips_noise_dirs_inside_the_sandbox(tmp_path: Path) -> None:
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "i.js").write_text("needle")
+    (tmp_path / "app.js").write_text("needle")
+    ex = _executor_at(tmp_path)
+    assert ex.execute("search_files", {"pattern": "*.js"}).result.output == "app.js"
+    assert "node_modules" not in ex.execute("grep_text", {"pattern": "needle"}).result.output
+
+
+def test_search_files_accepts_path_globs(tmp_path: Path) -> None:
+    (tmp_path / "src" / "deep").mkdir(parents=True)
+    (tmp_path / "src" / "k.py").write_text("k")
+    (tmp_path / "src" / "deep" / "d.py").write_text("d")
+    (tmp_path / "top.py").write_text("t")
+    ex = _executor_at(tmp_path)
+    out = ex.execute("search_files", {"pattern": "src/*.py"}).result.output.splitlines()
+    assert "src/k.py" in out and "top.py" not in out
+    everywhere = ex.execute("search_files", {"pattern": "**/*.py"}).result.output.splitlines()
+    assert {"top.py", "src/k.py", "src/deep/d.py"} <= set(everywhere)
+
+
+def test_grep_accepts_a_single_file_path(tmp_path: Path) -> None:
+    (tmp_path / "one.txt").write_text("alpha\nbeta\n")
+    (tmp_path / "two.txt").write_text("beta\n")
+    out = _executor_at(tmp_path).execute(
+        "grep_text", {"pattern": "beta", "path": "one.txt"}
+    ).result.output
+    assert out == "one.txt:2: beta"

@@ -371,6 +371,35 @@ class Sandbox:
             return False
         return resolved.exists()
 
+    def walk_files(
+        self,
+        path: str | os.PathLike[str] = ".",
+        *,
+        skip_dirs: Iterable[str] = (),
+    ) -> Iterable[Path]:
+        """Yield in-root regular files under ``path``, pruning ``skip_dirs``.
+
+        Unlike :meth:`iter_files` this never *descends* into a skipped directory
+        (so ``.git``/``node_modules`` cost nothing), and the skip names apply
+        only below ``path`` — a sandbox that itself lives under a directory
+        called ``venv`` is still searched. ``path`` may also be a single file.
+        Directory symlinks are not followed.
+        """
+        skip = set(skip_dirs)
+        resolved = self.safe_path(path, must_exist=True)
+        if resolved.is_file():
+            yield resolved
+            return
+        for dirpath, dirnames, filenames in os.walk(resolved, followlinks=False):
+            dirnames[:] = sorted(d for d in dirnames if d not in skip)
+            for name in sorted(filenames):
+                child = Path(dirpath) / name
+                try:
+                    if child.is_file() and self._is_within(child.resolve()):
+                        yield child
+                except OSError:  # pragma: no cover - broken symlink, races
+                    continue
+
     def iter_files(
         self,
         path: str | os.PathLike[str] = ".",

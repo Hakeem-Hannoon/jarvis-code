@@ -47,8 +47,9 @@ class InstructionQueue:
 
     def drain(self) -> list[Instruction]:
         """Pop and return all queued instructions in arrival order."""
-        items = list(self._items)
-        self._items.clear()
+        with self._lock:
+            items = list(self._items)
+            self._items.clear()
         return items
 
     def drain_steering(self) -> list[Instruction]:
@@ -57,23 +58,30 @@ class InstructionQueue:
         Permission responses are left queued so the active permission prompt (via
         ``QueueAwarePrompter``) consumes them — not the general loop checkpoint.
         """
-        kept: deque[Instruction] = deque()
         out: list[Instruction] = []
-        while self._items:
-            instr = self._items.popleft()
-            if instr.kind == InstructionKind.PERMISSION_RESPONSE:
-                kept.append(instr)
-            else:
-                out.append(instr)
-        self._items = kept
+        with self._lock:
+            # Mutate in place under the lock: rebinding ``self._items`` here would
+            # drop anything a reader thread appended to the old deque meanwhile.
+            kept = [i for i in self._items if i.kind == InstructionKind.PERMISSION_RESPONSE]
+            out = [i for i in self._items if i.kind != InstructionKind.PERMISSION_RESPONSE]
+            self._items.clear()
+            self._items.extend(kept)
         return out
 
     def pop_next(self) -> Instruction | None:
         """Pop the next instruction regardless of kind (used by the prompter)."""
-        return self._items.popleft() if self._items else None
+        with self._lock:
+            return self._items.popleft() if self._items else None
+
+    def has_hard_interrupt(self) -> bool:
+        """True if a "stop" is waiting — lets a long model call be abandoned early."""
+        with self._lock:
+            return any(i.kind == InstructionKind.HARD_INTERRUPT for i in self._items)
 
     def has_pending(self) -> bool:
-        return bool(self._items)
+        with self._lock:
+            return bool(self._items)
 
     def __len__(self) -> int:
-        return len(self._items)
+        with self._lock:
+            return len(self._items)

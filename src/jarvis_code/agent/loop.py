@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import threading
+import time
 from dataclasses import dataclass
 from enum import Enum
 
@@ -93,6 +94,52 @@ class RunResult:
     final_text: str
     steps: int
     state: RunState
+    # Filled in by ``AgentRuntime.run`` for the turn that just finished.
+    seconds: float = 0.0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    # What this turn changed (``state`` accumulates across a chat session).
+    files_changed: tuple[str, ...] = ()
+
+
+def _count(n: int, singular: str, plural: str | None = None) -> str:
+    return f"{n} {singular if n == 1 else (plural or singular + 's')}"
+
+
+def _result_detail(name: str, result) -> str:
+    """A short human note about a finished tool, for the step display.
+
+    Uses only counts/metadata — never file contents or command output.
+    """
+    if not result.ok:
+        return result.error or "failed"
+    meta = result.metadata
+    if name == "read_file":
+        total = meta.get("lines")
+        shown = meta.get("shown")
+        if isinstance(total, int) and isinstance(shown, (tuple, list)) and len(shown) == 2:
+            start, end = shown
+            if start <= 1 and end >= total:
+                return _count(total, "line")
+            return f"lines {start}–{end} of {total}"
+        return "read"
+    if name == "list_files":
+        return _count(meta.get("count", 0), "entry", "entries")
+    if name in ("search_files", "grep_text"):
+        count = meta.get("count", 0)
+        return _count(count, "match", "matches") if count else "no matches"
+    if name in ("write_file", "edit_file"):
+        # "Wrote x.py (+3 -1 lines)." -> "+3 -1 lines"
+        text = result.output
+        if "(" in text and text.rstrip(".").endswith(")"):
+            return text[text.rindex("(") + 1 :].rstrip(".").rstrip(")")
+        return "done"
+    if name == "run_shell":
+        return "exit 0"
+    if name in ("git_status", "git_diff"):
+        lines = len(result.output.splitlines())
+        return _count(lines, "line") if lines else "clean"
+    return "done"
 
 
 class AgentRuntime:
@@ -128,6 +175,7 @@ class AgentRuntime:
         # owner resets it at the start of each turn.
         self._owns_interrupt = not shares_interrupt
         self.interrupt = interrupt if interrupt is not None else threading.Event()
+        self._tokens = [0, 0]  # [input, output] tokens used by the current turn
         #: True while a turn is running (``run`` has not returned yet).
         self.busy = False
         #: True while tools run synchronously on the calling thread — the only
@@ -197,11 +245,18 @@ class AgentRuntime:
     async def run(self, user_request: str) -> RunResult:
         """Run one turn. Never leaves the conversation in a state a provider rejects."""
         self.busy = True
+        self._tokens = [0, 0]
+        files_before = len(self.state.files_changed)
+        started = time.monotonic()
         try:
-            return await self._run(user_request)
+            result = await self._run(user_request)
         finally:
             self.busy = False
             self.in_tool_section = False
+        result.seconds = time.monotonic() - started
+        result.tokens_in, result.tokens_out = self._tokens
+        result.files_changed = tuple(self.state.files_changed[files_before:])
+        return result
 
     async def _run(self, user_request: str) -> RunResult:
         # A previous turn's stop must not poison this one (the runtime is reused
@@ -252,6 +307,9 @@ class AgentRuntime:
             finally:
                 self._thinking(False)
 
+            used_in, used_out = response.token_usage()
+            self._tokens[0] += used_in
+            self._tokens[1] += used_out
             self.session.model_response(response.text, response.tool_calls, response.stop_reason)
             self.context.add_assistant(response)
             if response.text:
@@ -347,10 +405,13 @@ class AgentRuntime:
             request = self.executor.preview(tc.name, tc.arguments, response.text or None)
             if request is not None:
                 decision = self.executor.permissions.decide(request.capability)
-                if decision is not Decision.DENY:
+                if decision is Decision.ALLOW:
+                    # Runs without asking: show what is about to happen.
                     self.reporter.action(request)
-                if decision is Decision.ASK:
-                    # Optional hook (voice says "awaiting your authorization").
+                elif decision is Decision.ASK:
+                    # The approval prompt presents the request itself (command,
+                    # cwd, why, effect, risk / the diff) — showing it here too
+                    # just printed everything twice.
                     hook = getattr(self.reporter, "awaiting_approval", None)
                     if hook is not None:
                         hook(request)
@@ -383,9 +444,12 @@ class AgentRuntime:
             self.state.note_command(result.metadata.get("command"))
             if not result.ok:
                 self.state.note_error(result.error)
-            self.reporter.tool_finished(
-                tc.name, result.ok, result.error or f"{len(result.output)} chars"
-            )
+            if tc.name == "run_shell" and result.output:
+                # Optional hook: a console reporter shows an excerpt of the output.
+                hook = getattr(self.reporter, "tool_output", None)
+                if hook is not None:
+                    hook(tc.name, result.output, result.ok)
+            self.reporter.tool_finished(tc.name, result.ok, _result_detail(tc.name, result))
             self.bus.emit(
                 EventType.TOOL_FINISHED if result.ok else EventType.TOOL_FAILED, name=tc.name
             )

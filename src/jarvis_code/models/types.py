@@ -73,6 +73,26 @@ class ModelResponse:
     def wants_tools(self) -> bool:
         return bool(self.tool_calls)
 
+    def token_usage(self) -> tuple[int, int]:
+        """``(input_tokens, output_tokens)`` for this response, 0 when unknown.
+
+        Each provider names these differently; normalize them here so the UI can
+        show a running total without knowing which provider is in use.
+        """
+        usage = self.usage if isinstance(self.usage, dict) else {}
+
+        def first(*keys: str) -> int:
+            for key in keys:
+                value = usage.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return int(value)
+            return 0
+
+        return (
+            first("input_tokens", "prompt_tokens", "promptTokenCount"),
+            first("output_tokens", "completion_tokens", "candidatesTokenCount"),
+        )
+
 
 # A tool spec is the registry's provider-agnostic dict: {name, description, parameters}.
 ToolSpec = dict

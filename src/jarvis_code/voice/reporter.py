@@ -77,3 +77,6 @@ class VoiceReporter:
 
     def info(self, text: str) -> None:
         return None
+
+    def thinking(self, active: bool) -> None:
+        return None

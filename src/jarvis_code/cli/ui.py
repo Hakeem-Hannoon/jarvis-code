@@ -108,6 +108,9 @@ class ConsoleReporter:
     def info(self, text: str) -> None:
         self._echo(typer.style(text, fg=typer.colors.MAGENTA))
 
+    def thinking(self, active: bool) -> None:
+        return None
+
 
 class CompositeReporter:
     """Fan out reporter hooks to several reporters (e.g. console + voice)."""
@@ -138,6 +141,12 @@ class CompositeReporter:
     def info(self, text: str) -> None:
         for r in self._reporters:
             r.info(text)
+
+    def thinking(self, active: bool) -> None:
+        for r in self._reporters:
+            hook = getattr(r, "thinking", None)
+            if hook is not None:
+                hook(active)
 
 
 def print_finish_summary(result: RunResult) -> None:

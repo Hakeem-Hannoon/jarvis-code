@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import threading
 from dataclasses import dataclass
 from enum import Enum
 
@@ -22,6 +23,7 @@ from jarvis_code.sandbox import Sandbox
 from jarvis_code.sessions import SessionWriter
 from jarvis_code.tools import ToolContext, ToolExecutor, build_default_registry
 from jarvis_code.utils.logging import get_logger
+from jarvis_code.utils.threads import run_in_daemon_thread
 
 from .context import ConversationContext
 from .effort import profile_for
@@ -31,6 +33,23 @@ from .reporter import NoopReporter, Reporter
 from .state import RunState
 
 _log = get_logger("agent")
+
+# How often a waiting model call checks whether the user asked to stop.
+_INTERRUPT_POLL_SECONDS = 0.1
+
+# Provider stop reasons meaning "the response hit the output-token limit".
+_TRUNCATED_STOP_REASONS = {"max_tokens", "length", "MAX_TOKENS"}
+
+_TRUNCATED_TOOL_NOTE = (
+    "Not run: your response hit the output-token limit, so this tool call may "
+    "have been cut off mid-arguments. Re-issue it with less content per call — "
+    "e.g. write a large file in parts (write_file the first section, then "
+    "edit_file to append the rest)."
+)
+
+
+class _Interrupted(Exception):
+    """The user asked to stop while we were waiting on the model."""
 
 
 def _arg_summary(args: dict) -> str:
@@ -84,6 +103,7 @@ class AgentRuntime:
         reporter: Reporter | None = None,
         instructions: InstructionQueue | None = None,
         bus: EventBus | None = None,
+        interrupt: threading.Event | None = None,
     ) -> None:
         self.provider = provider
         self.executor = executor
@@ -96,6 +116,16 @@ class AgentRuntime:
         self.instructions = instructions if instructions is not None else InstructionQueue(self.bus)
         self._aborted = False  # set by a hard interrupt
         self._abort_reason = ""
+        # Set (from any thread or a signal handler) to stop the current turn: the
+        # CLI's Ctrl-C handler sets it. A sub-agent shares its parent's event so
+        # one Ctrl-C stops the whole tree; only the owner resets it per turn.
+        self._owns_interrupt = interrupt is None
+        self.interrupt = interrupt if interrupt is not None else threading.Event()
+        #: True while a turn is running (``run`` has not returned yet).
+        self.busy = False
+        #: True while tools run synchronously on the calling thread — the only
+        #: time a KeyboardInterrupt is needed to break out of a blocking call.
+        self.in_tool_section = False
 
     def steer(self, instruction: str) -> None:
         """Queue a steering instruction to fold in at the next safe checkpoint."""
@@ -107,6 +137,10 @@ class AgentRuntime:
         Safe checkpoints (the loop calls this before the model call, before each
         tool execution, after each tool result, and before finalizing).
         """
+        if self.interrupt.is_set() and not self._aborted:
+            self._aborted = True
+            self._abort_reason = "Interrupted."
+            self.bus.emit(EventType.INTERRUPT_REQUESTED, kind="hard", at=name)
         for instr in self.instructions.drain_steering():
             if instr.kind == InstructionKind.HARD_INTERRUPT:
                 self._aborted = True
@@ -128,7 +162,48 @@ class AgentRuntime:
         self.session.run_end("aborted", msg)
         return RunResult(RunStatus.ABORTED, msg, step, self.state)
 
+    def _thinking(self, active: bool) -> None:
+        # Optional hook: older/third-party reporters may not implement it.
+        hook = getattr(self.reporter, "thinking", None)
+        if hook is not None:
+            hook(active)
+
+    async def _call_model(self, messages, tools):
+        """Call the provider without blocking the loop — and without being stuck.
+
+        The request runs in a daemon thread while we poll for a stop request, so
+        "stop" / Ctrl-C take effect immediately instead of after a (possibly
+        minutes-long) generation, and an abandoned request never delays exit.
+        """
+        future = run_in_daemon_thread(self.provider.complete, messages, tools)
+        try:
+            while True:
+                done, _ = await asyncio.wait({future}, timeout=_INTERRUPT_POLL_SECONDS)
+                if done:
+                    return future.result()
+                if self.interrupt.is_set() or self.instructions.has_hard_interrupt():
+                    raise _Interrupted
+        finally:
+            if not future.done():
+                future.cancel()  # stop waiting; the thread's result is dropped
+
     async def run(self, user_request: str) -> RunResult:
+        """Run one turn. Never leaves the conversation in a state a provider rejects."""
+        self.busy = True
+        try:
+            return await self._run(user_request)
+        finally:
+            self.busy = False
+            self.in_tool_section = False
+
+    async def _run(self, user_request: str) -> RunResult:
+        # A previous turn's stop must not poison this one (the runtime is reused
+        # across chat turns), and anything it left half-done is closed out first.
+        self._aborted = False
+        self._abort_reason = ""
+        if self._owns_interrupt:
+            self.interrupt.clear()
+        self.context.close_dangling_tool_calls()
         self.state.goal = user_request
         self.executor.ctx.questions_asked = 0  # fresh clarification budget per turn
         self.session.prompt(user_request)
@@ -148,25 +223,65 @@ class AgentRuntime:
 
             messages = self.context.build()
             tools = self.executor.registry.specs()
+            self._thinking(True)
             try:
-                response = await asyncio.to_thread(self.provider.complete, messages, tools)
+                response = await self._call_model(messages, tools)
+            except _Interrupted:
+                self._checkpoint("during_model_call")  # consume a queued "stop"
+                self._aborted = True
+                self._abort_reason = self._abort_reason or "Interrupted."
+                return self._aborted_result(step)
             except ProviderError as exc:
                 self.session.error(str(exc))
                 return RunResult(RunStatus.ERROR, str(exc), step, self.state)
+            except Exception as exc:
+                # A provider bug / unexpected response shape must not take the
+                # whole session down with a traceback.
+                msg = f"model call failed: {type(exc).__name__}: {exc}"
+                _log.warning("%s", msg)
+                self.session.error(msg)
+                return RunResult(RunStatus.ERROR, msg, step, self.state)
+            finally:
+                self._thinking(False)
 
             self.session.model_response(response.text, response.tool_calls, response.stop_reason)
             self.context.add_assistant(response)
             if response.text:
                 self.reporter.assistant_text(response.text)
+            truncated = response.stop_reason in _TRUNCATED_STOP_REASONS
 
             if not response.tool_calls:
                 if not self._checkpoint("before_finalizing"):
                     return self._aborted_result(step)
+                if truncated:
+                    self.reporter.info(
+                        "note: the response hit the output-token limit and may be cut off "
+                        "(raise --effort for a larger budget)."
+                    )
                 self.session.run_end("complete", response.text)
                 self.bus.emit(EventType.AGENT_STEP_FINISHED, step=step, final=True)
                 return RunResult(RunStatus.COMPLETE, response.text, step, self.state)
 
-            self._run_tool_calls(response)
+            if truncated:
+                # The tool-call JSON was probably cut off: running it could write
+                # half a file. Don't — tell the model to send smaller pieces.
+                self._skip_tool_calls(response, _TRUNCATED_TOOL_NOTE)
+                self.bus.emit(EventType.AGENT_STEP_FINISHED, step=step)
+                continue
+
+            self.in_tool_section = True
+            try:
+                self._run_tool_calls(response)
+            except KeyboardInterrupt:
+                # Ctrl-C while a tool was blocking (a shell command, an approval
+                # prompt). Stop the turn cleanly instead of dying with the chat.
+                self._aborted = True
+                self._abort_reason = "Interrupted."
+                self.context.close_dangling_tool_calls(
+                    "Interrupted by the user before this tool finished."
+                )
+            finally:
+                self.in_tool_section = False
             self.bus.emit(EventType.AGENT_STEP_FINISHED, step=step)
             if self._aborted:
                 return self._aborted_result(step)
@@ -176,6 +291,14 @@ class AgentRuntime:
         return RunResult(RunStatus.MAX_STEPS, msg, self.max_steps, self.state)
 
     # -- tool execution ----------------------------------------------------
+
+    def _skip_tool_calls(self, response, note: str) -> None:
+        """Answer every tool call in ``response`` with ``note`` without running it."""
+        for tc in response.tool_calls:
+            self.session.record("tool_call", name=tc.name, arguments=tc.arguments)
+            self.context.add_tool_result(tc.id, tc.name, note)
+            self.session.tool_result(tc.name, False, note, None, {})
+        self.reporter.info("note: response was cut off by the output-token limit — retrying in smaller pieces.")
 
     def _run_tool_calls(self, response) -> None:
         revise_feedback: str | None = None
@@ -308,6 +431,7 @@ def assemble_runtime(
     # Lazy import avoids an import cycle (subagents imports agent symbols).
     from jarvis_code.subagents import SubAgentOrchestrator
 
+    interrupt = threading.Event()  # shared with sub-agents: one Ctrl-C stops all
     orchestrator = SubAgentOrchestrator(
         provider=provider,
         sandbox=sandbox,
@@ -316,6 +440,7 @@ def assemble_runtime(
         bus=bus,
         parent_session=session,
         parent_state=state,
+        interrupt=interrupt,
     )
     tool_ctx = ToolContext(sandbox=sandbox, orchestrator=orchestrator, asker=asker)
     executor = ToolExecutor(registry, permissions, tool_ctx)
@@ -329,4 +454,5 @@ def assemble_runtime(
         reporter=reporter,
         instructions=instructions,
         bus=bus,
+        interrupt=interrupt,
     )

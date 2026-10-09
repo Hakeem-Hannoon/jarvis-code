@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import HTTPProvider
+from .base import HTTPProvider, as_arguments
 from .types import Message, ModelResponse, Role, ToolCall, ToolSpec
 
 _DEFAULT_BASE = "https://api.anthropic.com"
@@ -16,18 +16,23 @@ def _messages_to_anthropic(messages: list[Message]) -> tuple[str | None, list[di
         if m.role == Role.SYSTEM:
             system_parts.append(m.content)
         elif m.role == Role.TOOL:
-            out.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": m.tool_call_id,
-                            "content": m.content,
-                        }
-                    ],
-                }
-            )
+            block = {
+                "type": "tool_result",
+                "tool_use_id": m.tool_call_id,
+                "content": m.content or "(no output)",
+            }
+            # All results for one assistant turn belong in ONE user message,
+            # directly after it — so append to the previous results message.
+            last = out[-1] if out else None
+            if (
+                last is not None
+                and last["role"] == "user"
+                and isinstance(last["content"], list)
+                and all(b.get("type") == "tool_result" for b in last["content"])
+            ):
+                last["content"].append(block)
+            else:
+                out.append({"role": "user", "content": [block]})
         elif m.role == Role.ASSISTANT and m.tool_calls:
             blocks: list[dict] = []
             if m.content:
@@ -37,6 +42,10 @@ def _messages_to_anthropic(messages: list[Message]) -> tuple[str | None, list[di
                     {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments}
                 )
             out.append({"role": "assistant", "content": blocks})
+        elif not m.content.strip():
+            # The API rejects empty text content. An empty turn carries nothing
+            # (e.g. a model reply with no text), so leave it out.
+            continue
         else:
             out.append({"role": m.role.value, "content": m.content})
     system = "\n\n".join(p for p in system_parts if p) or None
@@ -82,7 +91,7 @@ class AnthropicProvider(HTTPProvider):
                     ToolCall(
                         id=block.get("id", ""),
                         name=block.get("name", ""),
-                        arguments=block.get("input", {}) or {},
+                        arguments=as_arguments(block.get("input")),
                     )
                 )
         return ModelResponse(

@@ -8,7 +8,7 @@ changed, commands, errors, permissions, and sub-agent results intact.
 
 from __future__ import annotations
 
-from jarvis_code.models import Message, ModelResponse, Role, ToolCall
+from jarvis_code.models import Message, ModelResponse, Role
 from jarvis_code.utils.logging import redact
 
 from .state import RunState
@@ -83,9 +83,15 @@ class ConversationContext:
         if len(self.messages) <= self.keep_recent:
             return False
 
-        recent = self.messages[-self.keep_recent :]
-        # If the kept window would start on a TOOL result, include one more so a
-        # provider never sees an orphan tool_result without its tool_use.
+        # Never start the kept window on a TOOL result: a provider rejects a
+        # tool_result whose tool_use was summarized away. Walk the cut back to the
+        # assistant turn that requested it (keeping a few more messages).
+        cut = len(self.messages) - self.keep_recent
+        while cut > 0 and self.messages[cut].role == Role.TOOL:
+            cut -= 1
+        if cut <= 0:
+            return False  # nothing older than the kept window to collapse
+        recent = self.messages[cut:]
         summary = Message.user(
             redact(
                 "[context compacted to save space; preserved facts follow]\n"
@@ -94,3 +100,44 @@ class ConversationContext:
         )
         self.messages = [summary, *recent]
         return True
+
+    # -- repair ------------------------------------------------------------
+
+    def close_dangling_tool_calls(
+        self, note: str = "Not run: the previous turn was interrupted."
+    ) -> int:
+        """Make the tool_use / tool_result pairing valid again. Returns fixes made.
+
+        Every assistant tool call must be answered by a tool result before the
+        next model call, or the provider rejects the whole conversation (and in
+        a chat session, every turn after it). An interrupted turn — Ctrl-C, a
+        crash mid-batch — can leave calls unanswered; this answers them with
+        ``note`` and drops any result that has no matching call.
+        """
+        fixed = 0
+        out: list[Message] = []
+        pending: list[tuple[str, str]] = []  # (tool_call_id, name) awaiting a result
+
+        def flush() -> None:
+            nonlocal fixed
+            for call_id, name in pending:
+                out.append(Message.tool_result(call_id, name, note))
+                fixed += 1
+            pending.clear()
+
+        for message in self.messages:
+            if message.role == Role.TOOL:
+                match = next((p for p in pending if p[0] == message.tool_call_id), None)
+                if match is not None:
+                    pending.remove(match)
+                    out.append(message)
+                else:
+                    fixed += 1  # orphan result: its call is gone
+                continue
+            flush()
+            out.append(message)
+            if message.role == Role.ASSISTANT:
+                pending.extend((tc.id, tc.name) for tc in message.tool_calls)
+        flush()
+        self.messages = out
+        return fixed

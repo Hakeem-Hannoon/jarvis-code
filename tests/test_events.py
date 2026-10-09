@@ -49,6 +49,14 @@ from jarvis_code.sessions import SessionWriter
         ("why did you do that?", InstructionKind.QUESTION),
         ("what files changed", InstructionKind.QUESTION),
         ("also add type hints to the parser", InstructionKind.STEERING),
+        # A stop *command* interrupts; a sentence that merely contains the word
+        # is steering (these used to kill the run).
+        ("stop, that's the wrong file", InstructionKind.HARD_INTERRUPT),
+        ("please stop", InstructionKind.HARD_INTERRUPT),
+        ("stop doing that", InstructionKind.HARD_INTERRUPT),
+        ("don't stop the dev server", InstructionKind.STEERING),
+        ("add an abort button to the form", InstructionKind.STEERING),
+        ("stop the dev server then rerun the tests", InstructionKind.STEERING),
     ],
 )
 def test_classify(text: str, kind: InstructionKind) -> None:
@@ -84,10 +92,23 @@ def _perm_req() -> PermissionRequest:
     return PermissionRequest(tool_name="run_shell", capability=Capability.SHELL, summary="x")
 
 
-def test_queue_aware_prompter_yes() -> None:
+def test_queue_aware_prompter_never_approves_from_the_queue() -> None:
+    # A queued "yes" predates the request, so the user never saw what it would
+    # approve. It is discarded; with nobody to ask, the prompter fails closed.
     q = InstructionQueue()
     q.submit("yes")
-    assert QueueAwarePrompter(q).request_permission(_perm_req()).choice == Choice.YES
+    assert QueueAwarePrompter(q).request_permission(_perm_req()).choice == Choice.NO
+    assert len(q) == 0  # the stale approval was consumed, not left to bite later
+
+
+def test_queue_aware_prompter_stale_yes_defers_to_the_real_prompt() -> None:
+    from jarvis_code.permissions import AutoApprovePrompter
+
+    q = InstructionQueue()
+    q.submit("ok")
+    prompter = QueueAwarePrompter(q, inner=AutoApprovePrompter())
+    # Approval comes from the inner prompter (which shows the request), not the queue.
+    assert prompter.request_permission(_perm_req()).choice == Choice.YES
 
 
 def test_queue_aware_prompter_no() -> None:
@@ -233,16 +254,16 @@ async def test_hard_interrupt_aborts_run(sandbox: Sandbox) -> None:
 
 
 @pytest.mark.asyncio
-async def test_voice_permission_response_drives_run(sandbox: Sandbox) -> None:
-    # In auto mode a write needs approval; a queued "yes" approves it via the
-    # same menu (no parallel permission path).
+async def test_queued_yes_cannot_preapprove_a_write(sandbox: Sandbox) -> None:
+    # In auto mode a write needs approval. A "yes" queued before the request
+    # existed must NOT approve it — the user has not seen the diff.
     q = InstructionQueue()
     q.submit("yes")
     provider = InjectingProvider(
         q,
         responses=[
             ModelResponse(tool_calls=[ToolCall("c1", "write_file", {"path": "new.txt", "content": "hi"})]),
-            ModelResponse(text="Wrote the file."),
+            ModelResponse(text="Could not write the file."),
         ],
     )
     runtime = assemble_runtime(
@@ -256,4 +277,31 @@ async def test_voice_permission_response_drives_run(sandbox: Sandbox) -> None:
     )
     result = await runtime.run("Create new.txt")
     assert result.status == RunStatus.COMPLETE
-    assert (Path(sandbox.root) / "new.txt").read_text() == "hi"
+    assert not (Path(sandbox.root) / "new.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_queued_redirect_still_steers_the_run(sandbox: Sandbox) -> None:
+    # The safe direction still works: queued free text declines the request and
+    # is fed back to the model as steering.
+    q = InstructionQueue()
+    q.submit("put it in notes.txt instead")
+    provider = InjectingProvider(
+        q,
+        responses=[
+            ModelResponse(tool_calls=[ToolCall("c1", "write_file", {"path": "new.txt", "content": "hi"})]),
+            ModelResponse(text="Understood."),
+        ],
+    )
+    runtime = assemble_runtime(
+        config=_config(),
+        sandbox=sandbox,
+        mode=PermissionMode.AUTO,
+        provider=provider,
+        prompter=QueueAwarePrompter(q),
+        instructions=q,
+        session=SessionWriter(sandbox, session_id="voiceredirect"),
+    )
+    await runtime.run("Create new.txt")
+    assert not (Path(sandbox.root) / "new.txt").exists()
+    assert any("notes.txt" in m.content for m in runtime.context.messages)

@@ -30,7 +30,7 @@ class EffortProfile:
 _PROFILES: dict[Effort, EffortProfile] = {
     Effort.LOW: EffortProfile(
         max_steps=15,
-        max_tokens=2048,
+        max_tokens=4096,
         use_subagents=False,
         guidance=(
             "EFFORT low: be quick and minimal — make the smallest change that "
@@ -39,7 +39,10 @@ _PROFILES: dict[Effort, EffortProfile] = {
     ),
     Effort.MEDIUM: EffortProfile(
         max_steps=None,
-        max_tokens=4096,
+        # A tool call's arguments count against this: 4096 tokens could not hold
+        # a write_file of a ~300-line file. 8192 is the largest value every
+        # default model in the config template accepts.
+        max_tokens=8192,
         use_subagents=False,
         guidance=(
             "EFFORT medium: balanced — solve the task directly and sanity-check "

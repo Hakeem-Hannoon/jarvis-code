@@ -26,6 +26,8 @@ _CONFIG_CANDIDATES = (
     Path(".jarvis") / "config.toml",
     Path(".jarvis.toml"),
 )
+#: Public alias: the project-local paths that may hold a config (and keys).
+PROJECT_CONFIG_CANDIDATES = _CONFIG_CANDIDATES
 
 
 def env_var_for(provider: str) -> str:

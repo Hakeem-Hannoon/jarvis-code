@@ -15,6 +15,8 @@ import os
 import sys
 from collections.abc import Callable
 
+from jarvis_code.utils.text import sanitize_terminal
+
 from .manager import Choice, PermissionRequest, PermissionResponse
 
 
@@ -47,26 +49,35 @@ class ScriptedPrompter:
 
 
 def _request_body_lines(request: PermissionRequest) -> list[str]:
-    """The human-facing approval block (no secrets), without the choices line."""
-    lines = [f"Requesting permission: {request.summary}"]
+    """The human-facing approval block (no secrets), without the choices line.
+
+    Every field is model-controlled, so each is sanitized: an escape sequence in
+    a command must be *shown*, never interpreted by the terminal (it could hide
+    part of the command the user is about to approve).
+    """
+    clean = sanitize_terminal
+    lines = [f"Requesting permission: {clean(request.summary)}"]
     if request.command is not None:
-        lines.append(f"  command:         {request.command}")
+        lines.append(f"  command:         {clean(request.command)}")
     if request.cwd is not None:
-        lines.append(f"  working dir:     {request.cwd}")
+        lines.append(f"  working dir:     {clean(str(request.cwd))}")
     if request.why is not None:
-        lines.append(f"  why:             {request.why}")
+        lines.append(f"  why:             {clean(request.why)}")
     if request.expected_effect is not None:
-        lines.append(f"  expected effect: {request.expected_effect}")
+        lines.append(f"  expected effect: {clean(request.expected_effect)}")
     lines.append(f"  risk level:      {request.risk.value}")
     if request.diff:
         lines.append("  diff:")
-        lines.extend(f"    {ln}" for ln in request.diff.splitlines())
+        lines.extend(f"    {clean(ln)}" for ln in request.diff.splitlines())
     return lines
+
+
+CHOICES_LINE = "  1) Yes   2) No   3) Do Something Else"
 
 
 def render_request(request: PermissionRequest) -> str:
     """Render the approval block with the typed 1/2/3 choices line."""
-    return "\n".join(_request_body_lines(request) + ["  1) Yes   2) No   3) Do Something Else"])
+    return "\n".join(_request_body_lines(request) + [CHOICES_LINE])
 
 
 # Menu options in order, paired with the choice they produce.
@@ -122,6 +133,15 @@ class TerminalPrompter:
             _stdin_is_interactive(input_fn) if interactive is None else interactive
         )
 
+    def body_lines(self, request: PermissionRequest) -> list[str]:
+        """The lines describing the request (override to restyle the block).
+
+        Whatever the styling, it must show what the invariants require: the
+        command, working dir, why, expected effect and risk for shell; the diff
+        for file changes.
+        """
+        return _request_body_lines(request)
+
     def request_permission(self, request: PermissionRequest) -> PermissionResponse:
         if self._interactive:
             resp = self._arrow_menu(request)
@@ -132,17 +152,25 @@ class TerminalPrompter:
     # -- typed fallback (also what tests exercise) -------------------------
 
     def _typed_menu(self, request: PermissionRequest) -> PermissionResponse:
-        self._output(render_request(request))
-        while True:
-            raw = self._input("Choose [1/2/3]: ").strip().lower()
-            if raw in ("1", "y", "yes"):
-                return PermissionResponse(choice=Choice.YES)
-            if raw in ("2", "n", "no"):
-                return PermissionResponse(choice=Choice.NO)
-            if raw in ("3", "e", "else"):
-                feedback = self._input("What should I do instead? ").strip()
-                return PermissionResponse(choice=Choice.SOMETHING_ELSE, feedback=feedback or None)
-            self._output("Please choose 1, 2, or 3.")
+        self._output("\n".join([*self.body_lines(request), CHOICES_LINE]))
+        try:
+            while True:
+                raw = self._input("Choose [1/2/3]: ").strip().lower()
+                if raw in ("1", "y", "yes"):
+                    return PermissionResponse(choice=Choice.YES)
+                if raw in ("2", "n", "no"):
+                    return PermissionResponse(choice=Choice.NO)
+                if raw in ("3", "e", "else"):
+                    feedback = self._input("What should I do instead? ").strip()
+                    return PermissionResponse(
+                        choice=Choice.SOMETHING_ELSE, feedback=feedback or None
+                    )
+                self._output("Please choose 1, 2, or 3.")
+        except EOFError:
+            # stdin closed (piped/non-interactive run): nobody can approve, so
+            # fail closed instead of crashing with a traceback.
+            self._output("No input available — denying.")
+            return PermissionResponse(choice=Choice.NO)
 
     # -- interactive arrow-key menu ----------------------------------------
 
@@ -158,8 +186,8 @@ class TerminalPrompter:
             return None
 
         out = sys.stdout
-        self._output("\n".join(_request_body_lines(request)))
-        self._output("  Use ↑/↓ (or 1/2/3), Enter to confirm:")
+        self._output("\n".join(self.body_lines(request)))
+        self._output("\x1b[2m  ↑/↓ or 1/2/3 · Enter to confirm · Esc to deny\x1b[0m")
 
         idx = 0
 
@@ -203,9 +231,15 @@ class TerminalPrompter:
             out.flush()
 
         label, choice = _MENU[idx]
-        out.write(f"  → {label}\n")
+        # Collapse the menu to the one line that records what was chosen.
+        out.write(f"\x1b[{len(_MENU) + 1}A\x1b[J")
+        color = {Choice.YES: "32", Choice.NO: "31"}.get(choice, "33")
+        out.write(f"  \x1b[1;{color}m→ {label}\x1b[0m\n")
         out.flush()
         if choice == Choice.SOMETHING_ELSE:
-            feedback = self._input("What should I do instead? ").strip()
+            try:
+                feedback = self._input("What should I do instead? ").strip()
+            except EOFError:
+                feedback = ""
             return PermissionResponse(choice=choice, feedback=feedback or None)
         return PermissionResponse(choice=choice)

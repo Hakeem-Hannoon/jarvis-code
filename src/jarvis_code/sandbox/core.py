@@ -168,9 +168,15 @@ class Sandbox:
             root=str(self._root),
         )
 
-    def relpath(self, candidate: str | os.PathLike[str]) -> str:
-        """Return a display path relative to the root (validated first)."""
-        resolved = self.safe_path(candidate)
+    def relpath(
+        self, candidate: str | os.PathLike[str], *, follow_symlinks: bool = True
+    ) -> str:
+        """Return a display path relative to the root (validated first).
+
+        ``follow_symlinks=False`` names the link *entry* itself rather than what
+        it points at — what delete/move/list act on (see :meth:`safe_path`).
+        """
+        resolved = self.safe_path(candidate, follow_symlinks=follow_symlinks)
         if resolved == self._root:
             return "."
         return str(resolved.relative_to(self._root))
@@ -260,7 +266,9 @@ class Sandbox:
             if self._is_within(child.resolve()):
                 children.append(child)
             else:
-                _log.warning(
+                # Not an escape *attempt* (nobody asked to follow it), so this is
+                # debug noise, not a warning printed on every listing.
+                _log.debug(
                     "sandbox: skipping out-of-root entry %r under %r",
                     str(child),
                     str(resolved),
@@ -314,6 +322,22 @@ class Sandbox:
                 resolved=str(resolved_src),
                 root=str(self._root),
             )
+        # Moving "into" an existing directory lands at <dir>/<name> (like ``mv``);
+        # resolve that real destination so we validate and report the right path.
+        if resolved_dst.is_dir() and not resolved_dst.is_symlink():
+            resolved_dst = self.safe_path(
+                resolved_dst / resolved_src.name, follow_symlinks=False
+            )
+        if resolved_dst == resolved_src:
+            return resolved_dst
+        if os.path.lexists(resolved_dst):
+            # Never silently clobber: the caller approved a move, not an overwrite.
+            raise SandboxViolation(
+                f"Destination already exists: {dst!r} (delete it first to replace it)",
+                attempted=os.fspath(dst),
+                resolved=str(resolved_dst),
+                root=str(self._root),
+            )
         resolved_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(os.fspath(resolved_src), os.fspath(resolved_dst))
         return resolved_dst
@@ -346,6 +370,35 @@ class Sandbox:
         except SandboxViolation:
             return False
         return resolved.exists()
+
+    def walk_files(
+        self,
+        path: str | os.PathLike[str] = ".",
+        *,
+        skip_dirs: Iterable[str] = (),
+    ) -> Iterable[Path]:
+        """Yield in-root regular files under ``path``, pruning ``skip_dirs``.
+
+        Unlike :meth:`iter_files` this never *descends* into a skipped directory
+        (so ``.git``/``node_modules`` cost nothing), and the skip names apply
+        only below ``path`` — a sandbox that itself lives under a directory
+        called ``venv`` is still searched. ``path`` may also be a single file.
+        Directory symlinks are not followed.
+        """
+        skip = set(skip_dirs)
+        resolved = self.safe_path(path, must_exist=True)
+        if resolved.is_file():
+            yield resolved
+            return
+        for dirpath, dirnames, filenames in os.walk(resolved, followlinks=False):
+            dirnames[:] = sorted(d for d in dirnames if d not in skip)
+            for name in sorted(filenames):
+                child = Path(dirpath) / name
+                try:
+                    if child.is_file() and self._is_within(child.resolve()):
+                        yield child
+                except OSError:  # pragma: no cover - broken symlink, races
+                    continue
 
     def iter_files(
         self,

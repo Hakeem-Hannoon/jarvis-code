@@ -53,7 +53,12 @@ def run_init(opts: GlobalOptions, *, global_config: bool = False) -> int:
     if sandbox.exists(config_rel):
         typer.echo(f"Config already exists, leaving it untouched: {config_rel}")
     else:
-        sandbox.write(config_rel, DEFAULT_CONFIG_TEMPLATE)
+        written = sandbox.write(config_rel, DEFAULT_CONFIG_TEMPLATE)
+        # It is about to hold an API key: owner-only, like the global config.
+        try:
+            written.chmod(0o600)
+        except OSError:  # pragma: no cover - non-POSIX or odd perms
+            pass
         typer.echo(typer.style(f"Created {config_rel}", fg=typer.colors.GREEN))
 
     typer.echo(f"Created .jarvis/ at: {root}")

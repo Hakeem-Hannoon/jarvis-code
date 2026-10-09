@@ -48,8 +48,10 @@ def _run_git(ctx: ToolContext, git_args: list[str]) -> ToolResult:
             ["git", *_GIT_HARDENING, *git_args],
             cwd=str(workdir),
             env=_git_env(),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            errors="replace",  # a diff of a non-UTF-8 file must not raise
             timeout=ctx.shell_timeout,
         )
     except subprocess.TimeoutExpired:

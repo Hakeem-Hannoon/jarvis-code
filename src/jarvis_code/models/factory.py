@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import httpx
 
-from jarvis_code.config import JarvisConfig, require_provider
+from jarvis_code.config import ConfigValidationError, JarvisConfig, require_provider
 
 from .anthropic import AnthropicProvider
 from .base import ModelProvider
@@ -51,6 +51,17 @@ def build_provider(
     if max_tokens is not None:
         common["max_tokens"] = max_tokens
 
+    # These providers have no default endpoint; without one the request URL is
+    # garbage ("/openai/deployments/…", "projects/None/…") and the failure is an
+    # opaque transport error. Say what is actually missing.
+    required = {"azure": ("endpoint",), "vertex": ("endpoint", "project", "location")}
+    missing = [f for f in required.get(name, ()) if not getattr(pconf, f)]
+    if missing:
+        raise ConfigValidationError(
+            f"Provider '{name}' needs {', '.join(missing)} set under "
+            f"[providers.{name}] in the config."
+        )
+
     if name == "anthropic":
         return AnthropicProvider(**common)
     if name in ("openai", "deepseek", "azure"):
@@ -58,6 +69,6 @@ def build_provider(
     if name in ("gemini", "vertex"):
         return GeminiStyleProvider(variant=name, **common)
 
-    raise ValueError(
+    raise ConfigValidationError(
         f"Unsupported provider '{name}'. Supported: {', '.join(SUPPORTED_PROVIDERS)}"
     )

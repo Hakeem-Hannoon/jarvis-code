@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from .base import HTTPProvider
+from .base import HTTPProvider, as_arguments
 from .types import Message, ModelResponse, Role, ToolCall, ToolSpec
 
 _DEFAULT_BASE = {
@@ -110,12 +110,27 @@ class OpenAIStyleProvider(HTTPProvider):
             {"Authorization": f"Bearer {self._api_key}", "content-type": "application/json"},
         )
 
+    def _max_tokens_field(self) -> str:
+        """The name of the response-budget parameter for this endpoint.
+
+        OpenAI's own API deprecated ``max_tokens`` for ``max_completion_tokens``;
+        its reasoning models (o-series, GPT-5…) reject ``max_tokens`` outright
+        with a 400. Other OpenAI-compatible servers (DeepSeek, Azure, local
+        gateways) still expect ``max_tokens``, so only the real OpenAI endpoint
+        switches.
+        """
+        if self._variant == "openai" and (
+            self.endpoint is None or "api.openai.com" in self.endpoint.lower()
+        ):
+            return "max_completion_tokens"
+        return "max_tokens"
+
     def _build_request(self, messages, tools):
         url, headers = self._url_and_headers()
         body: dict = {
             "model": self.model,
             "messages": _messages_to_openai(messages),
-            "max_tokens": self.max_tokens,
+            self._max_tokens_field(): self.max_tokens,
         }
         oai_tools = _tools_to_openai(tools)
         if oai_tools:
@@ -125,13 +140,13 @@ class OpenAIStyleProvider(HTTPProvider):
 
     def _parse_response(self, data: dict) -> ModelResponse:
         choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message", {})
+        message = choice.get("message") or {}
         text = message.get("content") or ""
         tool_calls = []
         for tc in message.get("tool_calls") or []:
             fn = tc.get("function", {})
             try:
-                arguments = json.loads(fn.get("arguments") or "{}")
+                arguments = as_arguments(json.loads(fn.get("arguments") or "{}"))
             except json.JSONDecodeError:
                 arguments = {}
             tool_calls.append(ToolCall(id=tc.get("id", ""), name=fn.get("name", ""), arguments=arguments))

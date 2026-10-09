@@ -7,7 +7,7 @@ logged URLs); Vertex uses a bearer token and a project/location URL.
 
 from __future__ import annotations
 
-from .base import HTTPProvider
+from .base import HTTPProvider, as_arguments
 from .types import Message, ModelResponse, Role, ToolCall, ToolSpec
 
 _GEMINI_BASE = "https://generativelanguage.googleapis.com"
@@ -20,38 +20,57 @@ def _messages_to_gemini(messages: list[Message]) -> tuple[dict | None, list[dict
         if m.role == Role.SYSTEM:
             system = {"parts": [{"text": m.content}]}
         elif m.role == Role.TOOL:
-            contents.append(
-                {
-                    "role": "user",
-                    "parts": [
-                        {"functionResponse": {"name": m.name or "", "response": {"content": m.content}}}
-                    ],
+            part = {
+                "functionResponse": {
+                    "name": m.name or "",
+                    "response": {"content": m.content or "(no output)"},
                 }
-            )
+            }
+            # Gemini requires ONE turn holding as many functionResponse parts as
+            # the model turn had functionCall parts; a turn per result is a 400
+            # as soon as the model calls two tools at once.
+            last = contents[-1] if contents else None
+            if (
+                last is not None
+                and last["role"] == "user"
+                and all("functionResponse" in p for p in last["parts"])
+            ):
+                last["parts"].append(part)
+            else:
+                contents.append({"role": "user", "parts": [part]})
         elif m.role == Role.ASSISTANT and m.tool_calls:
             parts: list[dict] = []
             if m.content:
                 parts.append({"text": m.content})
             for tc in m.tool_calls:
-                parts.append({"functionCall": {"name": tc.name, "args": tc.arguments}})
+                call_part: dict = {"functionCall": {"name": tc.name, "args": tc.arguments}}
+                signature = tc.metadata.get("thought_signature")
+                if signature:
+                    # Thinking models require the signature echoed back verbatim.
+                    call_part["thoughtSignature"] = signature
+                parts.append(call_part)
             contents.append({"role": "model", "parts": parts})
+        elif not m.content.strip():
+            continue  # an empty text part is rejected; an empty turn says nothing
         else:
             role = "model" if m.role == Role.ASSISTANT else "user"
             contents.append({"role": role, "parts": [{"text": m.content}]})
     return system, contents
 
 
+def _declaration(tool: ToolSpec) -> dict:
+    decl = {"name": tool["name"], "description": tool["description"]}
+    # An OBJECT schema with no properties is rejected; a no-argument function
+    # is declared by simply omitting ``parameters``.
+    if (tool.get("parameters") or {}).get("properties"):
+        decl["parameters"] = tool["parameters"]
+    return decl
+
+
 def _tools_to_gemini(tools: list[ToolSpec] | None) -> list[dict] | None:
     if not tools:
         return None
-    return [
-        {
-            "functionDeclarations": [
-                {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}
-                for t in tools
-            ]
-        }
-    ]
+    return [{"functionDeclarations": [_declaration(t) for t in tools]}]
 
 
 class GeminiStyleProvider(HTTPProvider):
@@ -78,6 +97,8 @@ class GeminiStyleProvider(HTTPProvider):
     def _build_request(self, messages, tools):
         url, headers = self._url_and_headers()
         system, contents = _messages_to_gemini(messages)
+        # No maxOutputTokens: on Gemini's thinking models the cap also counts
+        # reasoning tokens, so a modest budget can come back as an empty reply.
         body: dict = {"contents": contents}
         if system:
             body["systemInstruction"] = system
@@ -92,13 +113,22 @@ class GeminiStyleProvider(HTTPProvider):
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         for i, part in enumerate(parts):
-            if "text" in part:
-                text_parts.append(part["text"])
-            elif "functionCall" in part:
-                fc = part["functionCall"]
+            if "functionCall" in part:
+                fc = part["functionCall"] or {}
+                metadata = {}
+                if part.get("thoughtSignature"):
+                    metadata["thought_signature"] = part["thoughtSignature"]
                 tool_calls.append(
-                    ToolCall(id=f"call_{i}", name=fc.get("name", ""), arguments=fc.get("args", {}) or {})
+                    ToolCall(
+                        id=f"call_{i}",
+                        name=fc.get("name", ""),
+                        arguments=as_arguments(fc.get("args")),
+                        metadata=metadata,
+                    )
                 )
+            elif "text" in part and not part.get("thought"):
+                # Skip "thought" parts: internal reasoning summaries, not the reply.
+                text_parts.append(part["text"])
         return ModelResponse(
             text="".join(text_parts),
             tool_calls=tool_calls,

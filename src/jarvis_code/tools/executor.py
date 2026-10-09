@@ -13,6 +13,7 @@ place.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from jarvis_code.permissions import (
@@ -24,10 +25,14 @@ from jarvis_code.permissions import (
 )
 from jarvis_code.sandbox import SandboxViolation
 from jarvis_code.utils.diffs import unified_diff
+from jarvis_code.utils.logging import get_logger
 
 from .base import ToolContext, ToolResult
+from .protected import protected_reason
 from .registry import ToolRegistry
 from .shell_tool import assess_shell_risk
+
+_log = get_logger("tools.executor")
 
 
 @dataclass
@@ -61,7 +66,7 @@ class ToolExecutor:
     ) -> PermissionRequest | None:
         """Build the request for an about-to-run tool (for the reporter), or None."""
         tool = self.registry.get(tool_name)
-        if tool is None:
+        if tool is None or not isinstance(args, dict):
             return None
         return self.build_request(tool_name, tool.capability, args, rationale)
 
@@ -72,7 +77,11 @@ class ToolExecutor:
         *,
         rationale: str | None = None,
         request: PermissionRequest | None = None,
+        before_run: Callable[[], None] | None = None,
     ) -> ExecutionResult:
+        """Authorize, then run. ``before_run`` fires once the call is authorized
+        and about to execute (the UI uses it to show that a command is running).
+        """
         tool = self.registry.get(tool_name)
         if tool is None:
             return ExecutionResult(
@@ -82,13 +91,24 @@ class ToolExecutor:
                 reason="unknown tool",
             )
 
+        if not isinstance(args, dict):
+            # A provider can hand back a JSON array/string as "arguments".
+            return ExecutionResult(
+                tool_name=tool_name,
+                outcome=OutcomeKind.DENIED,
+                result=ToolResult.fail(f"{tool_name}: arguments must be a JSON object"),
+                reason="malformed arguments",
+            )
         if request is None:
             request = self.build_request(tool_name, tool.capability, args, rationale)
         outcome = self.permissions.authorize(request)
 
         if outcome.kind == OutcomeKind.ALLOWED:
-            result = tool.run(self.ctx, args)
-            return ExecutionResult(tool_name, OutcomeKind.ALLOWED, result=result)
+            if before_run is not None:
+                before_run()
+            return ExecutionResult(
+                tool_name, OutcomeKind.ALLOWED, result=self._run_tool(tool, args)
+            )
 
         if outcome.kind == OutcomeKind.REVISE:
             return ExecutionResult(
@@ -105,6 +125,22 @@ class ToolExecutor:
             result=ToolResult.fail(f"permission denied: {outcome.reason}"),
             reason=outcome.reason,
         )
+
+    def _run_tool(self, tool, args: dict) -> ToolResult:
+        """Run an authorized tool; a tool bug or bad arguments never kills the run.
+
+        Arguments come from the model and are untrusted: a missing/garbled one
+        (or anything else a tool didn't anticipate) is reported back to the
+        model as a failed tool result so it can correct itself, instead of an
+        exception unwinding the whole agent loop.
+        """
+        try:
+            return tool.run(self.ctx, args)
+        except ValueError as exc:  # e.g. a missing required argument
+            return ToolResult.fail(str(exc))
+        except Exception as exc:
+            _log.warning("tool %s crashed: %s: %s", tool.name, type(exc).__name__, exc)
+            return ToolResult.fail(f"{tool.name} failed: {type(exc).__name__}: {exc}")
 
     # -- request construction ----------------------------------------------
 
@@ -150,6 +186,9 @@ class ToolExecutor:
     def _preview_diff(self, tool_name: str, args: dict) -> str | None:
         """Best-effort change preview for the approval prompt (read-only)."""
         sandbox = self.ctx.sandbox
+        path_arg = args.get("path")
+        if path_arg and protected_reason(sandbox, path_arg):
+            return None  # the tool will refuse; never render a config's contents
         try:
             if tool_name == "write_file":
                 path = args.get("path")
@@ -162,9 +201,10 @@ class ToolExecutor:
                 if not path or not sandbox.exists(path):
                     return None
                 old = sandbox.read(path)
-                new = old.replace(
-                    str(args.get("old_string", "")), str(args.get("new_string", ""))
-                )
+                needle = str(args.get("old_string", ""))
+                if not needle:
+                    return None  # the tool rejects an empty old_string
+                new = old.replace(needle, str(args.get("new_string", "")))
                 return unified_diff(old, new, str(path)) or None
         except (SandboxViolation, OSError, UnicodeDecodeError):
             return None

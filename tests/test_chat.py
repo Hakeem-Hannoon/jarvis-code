@@ -270,11 +270,67 @@ def test_handle_compress_forces_compaction() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_command_hints_shown_each_turn() -> None:
+async def test_chat_command_hints_shown_once_not_before_every_prompt() -> None:
     out: list[str] = []
     rt = FakeRuntime()
-    await chat_loop(rt, prompt_fn=_prompt_from(["/exit"]), echo=out.append)
-    assert any("/compress" in o for o in out)  # key commands shown at the prompt
+    await chat_loop(rt, prompt_fn=_prompt_from(["one", "two", "three", "/exit"]), echo=out.append)
+    assert sum("/compress" in o for o in out) == 1  # shown under the banner, once
+
+
+@pytest.mark.asyncio
+async def test_mistyped_slash_command_is_not_sent_to_the_model() -> None:
+    out: list[str] = []
+    rt = FakeRuntime()
+    await chat_loop(rt, prompt_fn=_prompt_from(["/hlep", "/exit"]), echo=out.append)
+    assert rt.runs == []  # used to become a (token-costing) task
+    assert any("unknown command /hlep" in o for o in out)
+
+
+@pytest.mark.asyncio
+async def test_a_message_starting_with_a_path_is_still_a_task() -> None:
+    rt = FakeRuntime()
+    msg = "/etc/hosts looks wrong, can you check the parser?"
+    await chat_loop(rt, prompt_fn=_prompt_from([msg, "/exit"]), echo=lambda _s: None)
+    assert rt.runs == [msg]
+
+
+def test_status_and_clear_commands() -> None:
+    from jarvis_code.agent import ConversationContext, RunState
+    from jarvis_code.cli.chat import _handle_clear, _handle_status
+
+    ctx = ConversationContext("sys", max_chars=1000)
+    ctx.add_user("x" * 500)
+    rt = SimpleNamespace(
+        context=ctx,
+        state=RunState(files_changed=["a.py"]),
+        provider=SimpleNamespace(name="anthropic", model="claude-x"),
+        executor=SimpleNamespace(
+            permissions=SimpleNamespace(mode=PermissionMode.PLAN),
+            ctx=SimpleNamespace(sandbox=SimpleNamespace(root="/tmp/proj")),
+        ),
+    )
+    out: list[str] = []
+    _handle_status(rt, out.append)
+    blob = "\n".join(out)
+    assert "plan" in blob and "anthropic · claude-x" in blob and "/tmp/proj" in blob
+    assert "50%" in blob and "a.py" in blob
+
+    _handle_clear(rt, out.append)
+    assert ctx.messages == []
+    assert any("cleared" in o for o in out)
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_tells_the_user_why() -> None:
+    # The real runtime RETURNS an error result (it doesn't raise); the chat used
+    # to print only "[error]" and drop the provider's message on the floor.
+    class ErroringRuntime(FakeRuntime):
+        async def run(self, message: str) -> RunResult:
+            return RunResult(RunStatus.ERROR, "anthropic API error 401: invalid x-api-key", 1, RunState())
+
+    out: list[str] = []
+    await chat_loop(ErroringRuntime(), prompt_fn=_prompt_from(["hi", "/exit"]), echo=out.append)
+    assert any("invalid x-api-key" in o for o in out)
 
 
 @pytest.mark.asyncio

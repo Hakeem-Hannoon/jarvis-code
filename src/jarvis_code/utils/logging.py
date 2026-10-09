@@ -30,8 +30,11 @@ REDACTION_MARKER = _REDACTION
 # git command can never read a key back into the model's context — even a secret
 # we never registered. PATH/HOME/etc. are untouched.
 _SECRET_ENV_NAME = re.compile(
-    r"(?:_API_KEY|_APIKEY|_ACCESS_KEY|_SECRET_KEY|_SECRET|_TOKEN|_PASSWORD|_PASSWD"
-    r"|_CREDENTIALS?)$",
+    # A credential word as the whole name or its last `_`-separated part
+    # (API_KEY, OPENAI_API_KEY, GH_TOKEN, AWS_SECRET_ACCESS_KEY, …), or a name
+    # that simply ends in PASSWORD/PASSWD (PGPASSWORD, MYSQL_PWD-style names).
+    r"(?:(?:^|_)(?:API_?KEY|ACCESS_KEY|SECRET_KEY|PRIVATE_KEY|SECRET|TOKEN|PAT|CREDENTIALS?)"
+    r"|PASSWORD|PASSWD|_PWD)$",
     re.IGNORECASE,
 )
 

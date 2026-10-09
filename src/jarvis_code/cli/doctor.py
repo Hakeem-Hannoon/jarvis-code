@@ -43,6 +43,15 @@ def _have(module: str) -> bool:
         return False
 
 
+def _short(path: Path) -> str:
+    """Abbreviate the home directory to ``~`` so rows stay on one line."""
+    try:
+        rel = path.relative_to(Path.home())
+    except ValueError:
+        return str(path)
+    return "~" if str(rel) == "." else f"~/{rel.as_posix()}"
+
+
 def collect_checks(opts: GlobalOptions) -> list[Check]:
     checks: list[Check] = []
 
@@ -56,14 +65,14 @@ def collect_checks(opts: GlobalOptions) -> list[Check]:
     root: Path | None = None
     try:
         root = resolve_sandbox_root(Path.cwd(), opts.sandbox)
-        checks.append(Check("sandbox root", True, str(root)))
+        checks.append(Check("sandbox root", True, _short(root)))
     except SandboxRootError as exc:
         checks.append(Check("sandbox root", False, str(exc)))
 
     base = root or Path.cwd()
     cfg_path = find_config_path(base)
     checks.append(
-        Check("config present", cfg_path is not None, str(cfg_path) if cfg_path else "run: jarvis init")
+        Check("config present", cfg_path is not None, _short(cfg_path) if cfg_path else "run: jarvis init")
     )
 
     config = None
@@ -99,17 +108,23 @@ def collect_checks(opts: GlobalOptions) -> list[Check]:
                 f"configured={voice.engine.value}, would use={selected.name}",
             )
         )
+        # Voice is optional: a missing engine is informational ("–") unless voice
+        # output is switched on, in which case it is the reason you hear nothing.
+        missing = False if voice.enabled else None
         if voice.engine == VoiceEngineName.PIPER:
+            have_piper = _have("piper")
             checks.append(
-                Check("Piper TTS", _have("piper"), "ok" if _have("piper") else "pip install '.[voice]'")
+                Check("Piper TTS", True if have_piper else missing,
+                      "ok" if have_piper else "not installed — pip install '.[voice]'")
             )
         from jarvis_code.voice import system_tts_available
 
         if sys.platform == "darwin":
             sys_detail = "ok — using macOS 'say'" if shutil.which("say") else "say binary missing"
         else:
-            sys_detail = "ok (pyttsx3)" if _have("pyttsx3") else "optional — pip install '.[voice]'"
-        checks.append(Check("system TTS", system_tts_available(), sys_detail))
+            sys_detail = "ok (pyttsx3)" if _have("pyttsx3") else "not installed — pip install '.[voice]'"
+        have_system = system_tts_available()
+        checks.append(Check("system TTS", True if have_system else missing, sys_detail))
 
         if voice.input.enabled:
             stt_mod = "faster_whisper" if voice.input.stt_engine == SttEngineName.FASTER_WHISPER else "vosk"
@@ -137,20 +152,26 @@ def collect_checks(opts: GlobalOptions) -> list[Check]:
 
 def run_doctor(opts: GlobalOptions) -> int:
     checks = collect_checks(opts)
+    width = max(len(c.label) for c in checks)
     typer.echo(typer.style("jarvis doctor", bold=True))
+    typer.echo("")
     for check in checks:
         if check.status is True:
             mark = typer.style("✓", fg=typer.colors.GREEN)
+            detail = typer.style(check.detail, dim=True)
         elif check.status is False:
             mark = typer.style("✗", fg=typer.colors.RED)
+            detail = typer.style(check.detail, fg=typer.colors.YELLOW)
         else:
             mark = typer.style("–", fg=typer.colors.YELLOW)
-        typer.echo(f"  {mark} {check.label}: {check.detail}")
+            detail = typer.style(check.detail, dim=True)
+        typer.echo(f"  {mark} {check.label:<{width}}  {detail}")
 
     failed = [c for c in checks if c.status is False]
     typer.echo("")
     if failed:
-        typer.echo(typer.style(f"{len(failed)} check(s) need attention.", fg=typer.colors.YELLOW))
+        noun = "check needs" if len(failed) == 1 else "checks need"
+        typer.echo(typer.style(f"  {len(failed)} {noun} attention.", fg=typer.colors.YELLOW))
     else:
-        typer.echo(typer.style("All checks passed.", fg=typer.colors.GREEN))
+        typer.echo(typer.style("  All checks passed.", fg=typer.colors.GREEN))
     return 0

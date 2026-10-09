@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from jarvis_code.sandbox import Sandbox
+from jarvis_code.sandbox import Sandbox, SandboxViolation
 from jarvis_code.utils.logging import get_logger, redact
 
 _log = get_logger("sessions")
@@ -46,6 +46,7 @@ class SessionWriter:
         self.sandbox = sandbox
         self.session_id = session_id or new_session_id()
         self.path = f"{session_dir}/{self.session_id}.jsonl"
+        self._warned = False
 
     # -- low level ---------------------------------------------------------
 
@@ -58,9 +59,15 @@ class SessionWriter:
         }
         safe = _redact_value(payload)
         try:
-            self.sandbox.append(self.path, json.dumps(safe, ensure_ascii=False) + "\n")
-        except OSError as exc:  # pragma: no cover - disk issues shouldn't crash a run
-            _log.warning("could not write transcript: %s", exc)
+            line = json.dumps(safe, ensure_ascii=False, default=str)
+            self.sandbox.append(self.path, line + "\n")
+        except (OSError, SandboxViolation, ValueError) as exc:
+            # Disk trouble, or `.jarvis` being a symlink out of the sandbox: the
+            # transcript is skipped (never written outside the root) and the run
+            # carries on. Warn once, not on every record.
+            if not self._warned:
+                self._warned = True
+                _log.warning("transcript disabled for this session: %s", exc)
 
     # -- typed records -----------------------------------------------------
 

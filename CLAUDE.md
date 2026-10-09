@@ -30,6 +30,10 @@ foundation code, not a demo.
 **Trust boundary**
 - The model *proposes*; the deterministic runtime *enforces*. Treat every
   model-produced path/command/argument as untrusted input and validate it.
+- Model-controlled text is passed through `utils.text.sanitize_terminal` before
+  it is printed (escape sequences are shown, never interpreted).
+- An approval is only ever given to a request the user can see: queued/earlier
+  input may decline or redirect a prompt, never approve it.
 
 **Voice privacy**
 - Voice in/out is local/offline by default. No cloud TTS/STT unless explicitly
@@ -130,7 +134,8 @@ All phases (0–11) complete:
   context compaction + JSONL sessions + project memory; 6 CLI surface
   (init/doctor/config/voices) + UX; 7 local voice output (Piper/System/Noop) +
   curated cancellable queue; 8 local STT + Open Mic/PTT/Muted; 9 event bus +
-  instruction queue + steering/interrupts + voice-as-permission; 10 sub-agent
+  instruction queue + steering/interrupts + queued decline/redirect (a queued
+  "yes" never approves — approvals are always shown first); 10 sub-agent
   orchestration (clamped perms, summary-only); 11 docs + final doctor.
 
 Test command: `pytest -q` (must stay green). See `docs/` for deeper notes and

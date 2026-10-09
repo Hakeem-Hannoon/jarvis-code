@@ -7,6 +7,7 @@ from jarvis_code.sandbox import SandboxViolation
 from jarvis_code.utils.diffs import change_summary, unified_diff
 
 from .base import Tool, ToolContext, ToolResult
+from .protected import protected_reason
 
 _PATH_SCHEMA = {
     "type": "object",
@@ -35,11 +36,20 @@ class ListFilesTool(Tool):
         names = []
         for entry in entries:
             suffix = "/" if entry.is_dir() else ""
-            names.append(ctx.sandbox.relpath(entry) + suffix)
+            # Name the entry itself: a symlink is listed under its own name, not
+            # the name of whatever it points at.
+            names.append(ctx.sandbox.relpath(entry, follow_symlinks=False) + suffix)
         return ToolResult.success("\n".join(names), count=len(names))
 
 
 _DEFAULT_READ_LINES = 2000
+
+
+def _as_bool(value: object) -> bool:
+    """Coerce a model-supplied flag. ``bool("false")`` is True — don't use it."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "y", "on")
+    return bool(value)
 
 
 class ReadFileTool(Tool):
@@ -69,6 +79,8 @@ class ReadFileTool(Tool):
 
     def run(self, ctx: ToolContext, args: dict) -> ToolResult:
         path = self._require(args, "path")
+        if reason := protected_reason(ctx.sandbox, path):
+            return ToolResult.fail(reason, protected=True)
         try:
             content = ctx.sandbox.read(path)
         except (SandboxViolation, OSError, UnicodeDecodeError) as exc:
@@ -78,6 +90,11 @@ class ReadFileTool(Tool):
         total = len(lines)
         offset = self._as_int(args.get("offset"), default=1, minimum=1)
         limit = self._as_int(args.get("limit"), default=_DEFAULT_READ_LINES, minimum=1)
+        if offset > 1 and offset > total:
+            rel = ctx.sandbox.relpath(path)
+            return ToolResult.fail(
+                f"offset {offset} is past the end of {rel} ({total} lines)."
+            )
         start = offset - 1
         chunk = lines[start : start + limit]
         body = "\n".join(chunk)
@@ -124,14 +141,20 @@ class WriteFileTool(Tool):
     def run(self, ctx: ToolContext, args: dict) -> ToolResult:
         path = self._require(args, "path")
         content = self._require(args, "content")
+        if reason := protected_reason(ctx.sandbox, path):
+            return ToolResult.fail(reason, protected=True)
         try:
-            old = ctx.sandbox.read(path) if ctx.sandbox.exists(path) else ""
+            try:
+                old = ctx.sandbox.read(path) if ctx.sandbox.exists(path) else ""
+            except UnicodeDecodeError:
+                old = None  # replacing a binary/non-UTF-8 file: no line diff to show
             resolved = ctx.sandbox.write(path, str(content))
         except (SandboxViolation, OSError) as exc:
             return ToolResult.fail(str(exc))
         rel = ctx.sandbox.relpath(resolved)
+        summary = "replaced a non-text file" if old is None else change_summary(old, str(content))
         return ToolResult.success(
-            f"Wrote {rel} ({change_summary(old, str(content))}).",
+            f"Wrote {rel} ({summary}).",
             path=rel,
             files_changed=[rel],
         )
@@ -159,7 +182,17 @@ class EditFileTool(Tool):
         path = self._require(args, "path")
         old_string = str(self._require(args, "old_string"))
         new_string = str(self._require(args, "new_string"))
-        replace_all = bool(args.get("replace_all", False))
+        replace_all = _as_bool(args.get("replace_all", False))
+        if reason := protected_reason(ctx.sandbox, path):
+            return ToolResult.fail(reason, protected=True)
+        if old_string == "":
+            # str.count("") matches between every character: with replace_all it
+            # would splice new_string through the entire file.
+            return ToolResult.fail(
+                "old_string must not be empty; use write_file to create or replace a file."
+            )
+        if old_string == new_string:
+            return ToolResult.fail("old_string and new_string are identical; nothing to change.")
         try:
             content = ctx.sandbox.read(path)
         except (SandboxViolation, OSError, UnicodeDecodeError) as exc:
@@ -195,8 +228,12 @@ class DeleteFileTool(Tool):
 
     def run(self, ctx: ToolContext, args: dict) -> ToolResult:
         path = self._require(args, "path")
+        if reason := protected_reason(ctx.sandbox, path, contains=True):
+            return ToolResult.fail(reason, protected=True)
         try:
-            rel = ctx.sandbox.relpath(path)
+            # The link entry, not its target: an in-root symlink that points
+            # outside the sandbox can still be removed (the link, never the target).
+            rel = ctx.sandbox.relpath(path, follow_symlinks=False)
             ctx.sandbox.delete(path)
         except (SandboxViolation, OSError) as exc:
             return ToolResult.fail(str(exc))
@@ -211,6 +248,8 @@ class CreateDirectoryTool(Tool):
 
     def run(self, ctx: ToolContext, args: dict) -> ToolResult:
         path = self._require(args, "path")
+        if reason := protected_reason(ctx.sandbox, path):
+            return ToolResult.fail(reason, protected=True)
         try:
             resolved = ctx.sandbox.mkdir(path)
         except (SandboxViolation, OSError) as exc:
@@ -235,12 +274,17 @@ class MoveFileTool(Tool):
     def run(self, ctx: ToolContext, args: dict) -> ToolResult:
         src = self._require(args, "src")
         dst = self._require(args, "dst")
+        reason = protected_reason(ctx.sandbox, src, contains=True) or protected_reason(
+            ctx.sandbox, dst
+        )
+        if reason:
+            return ToolResult.fail(reason, protected=True)
         try:
-            src_rel = ctx.sandbox.relpath(src)
+            src_rel = ctx.sandbox.relpath(src, follow_symlinks=False)
             resolved = ctx.sandbox.move(src, dst)
+            dst_rel = ctx.sandbox.relpath(resolved, follow_symlinks=False)
         except (SandboxViolation, OSError) as exc:
             return ToolResult.fail(str(exc))
-        dst_rel = ctx.sandbox.relpath(resolved)
         return ToolResult.success(
             f"Moved {src_rel} -> {dst_rel}.",
             files_changed=[src_rel, dst_rel],

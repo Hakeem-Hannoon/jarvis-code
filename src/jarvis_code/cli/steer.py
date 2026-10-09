@@ -20,11 +20,30 @@ from collections.abc import Callable
 
 import typer
 
-from jarvis_code.events import InstructionKind, InstructionQueue
-from jarvis_code.events.prompter import map_text_to_response
+from jarvis_code.events import InstructionKind, InstructionQueue, classify
+from jarvis_code.events.prompter import response_from_queue
 from jarvis_code.permissions import PermissionRequest, PermissionResponse, Prompter
 
 _EOF = ""  # what a reader returns at end-of-input
+
+
+def looks_like_command(message: str) -> bool:
+    """True for a short ``/word`` line — a (mistyped) slash command, not a task.
+
+    A message that merely *starts with a path* ("/etc/hosts looks wrong, why?")
+    is still a task: the first token has a second slash, or more words follow.
+    """
+    parts = message.split()
+    if not parts:
+        return False
+    head = parts[0]
+    return (
+        head.startswith("/")
+        and len(head) > 1
+        and "/" not in head[1:]
+        and head[1:].replace("-", "").isalpha()
+        and len(parts) <= 2
+    )
 
 
 def make_console_asker(
@@ -135,26 +154,37 @@ class SteerSession:
         text = line.strip()
         if not text:
             return True
+        if looks_like_command(text):
+            # Slash commands belong to the idle prompt; sent as steering they
+            # would just confuse the model ("/status" is not an instruction).
+            self._echo(f"  ↪ {text.split()[0]} works at the prompt — Ctrl-C stops this turn first.")
+            return True
+        if classify(text) == InstructionKind.PERMISSION_RESPONSE:
+            # This reader stands down while an approval menu is up, so a bare
+            # "yes"/"ok"/"no" read here is answering nothing. Queueing it would
+            # let it decide the *next* request before the user has seen it.
+            self._echo("  ↪ nothing is waiting for a yes/no — I'll ask when I need approval.")
+            return True
         instr = self.instructions.submit(text, source="text")
         self._announce(instr.kind)
         return True
 
     def _announce(self, kind: InstructionKind) -> None:
         if kind == InstructionKind.HARD_INTERRUPT:
-            self._echo("⏹  stopping after the current step…")
+            self._echo("  ⏹ stopping…")
         elif kind == InstructionKind.SOFT_INTERRUPT:
-            self._echo("↪ noted — I'll adjust after this step.")
-        elif kind == InstructionKind.PERMISSION_RESPONSE:
-            self._echo("↪ answer queued.")
+            self._echo("  ↪ noted — I'll adjust after this step.")
         else:
-            self._echo("↪ steering queued — folding in after the current step.")
+            self._echo("  ↪ steering queued — folding in after the current step.")
 
 
 class PausingQueuePrompter:
     """Permission prompter for a live session.
 
-    If the user already queued an answer, use it. Otherwise pause the steering
-    reader (so the approval menu owns stdin) and defer to the inner prompter.
+    Steering the user already typed can *decline or redirect* the request, but
+    never approve it (see ``events.prompter``): approval always comes from the
+    inner prompter, which shows the request first. While it asks, the steering
+    reader is paused so the approval menu owns stdin.
     """
 
     def __init__(
@@ -162,15 +192,20 @@ class PausingQueuePrompter:
         queue: InstructionQueue,
         inner: Prompter,
         prompt_active: threading.Event,
+        *,
+        echo: Callable[[str], None] = lambda _s: None,
     ) -> None:
         self._queue = queue
         self._inner = inner
         self._prompt_active = prompt_active
+        self._echo = echo
 
     def request_permission(self, request: PermissionRequest) -> PermissionResponse:
-        instr = self._queue.pop_next()
-        if instr is not None:
-            return map_text_to_response(instr.text)
+        response, dropped = response_from_queue(self._queue)
+        if dropped:
+            self._echo("  (ignored an earlier \"yes\" — it was typed before this request)")
+        if response is not None:
+            return response
         self._prompt_active.set()
         try:
             return self._inner.request_permission(request)

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import threading
+import time
 from dataclasses import dataclass
 from enum import Enum
 
@@ -22,6 +24,7 @@ from jarvis_code.sandbox import Sandbox
 from jarvis_code.sessions import SessionWriter
 from jarvis_code.tools import ToolContext, ToolExecutor, build_default_registry
 from jarvis_code.utils.logging import get_logger
+from jarvis_code.utils.threads import run_in_daemon_thread
 
 from .context import ConversationContext
 from .effort import profile_for
@@ -32,13 +35,50 @@ from .state import RunState
 
 _log = get_logger("agent")
 
+# How often a waiting model call checks whether the user asked to stop.
+_INTERRUPT_POLL_SECONDS = 0.1
+
+# Provider stop reasons meaning "the response hit the output-token limit".
+_TRUNCATED_STOP_REASONS = {"max_tokens", "length", "MAX_TOKENS"}
+
+_TRUNCATED_TOOL_NOTE = (
+    "Not run: your response hit the output-token limit, so this tool call may "
+    "have been cut off mid-arguments. Re-issue it with less content per call — "
+    "e.g. write a large file in parts (write_file the first section, then "
+    "edit_file to append the rest)."
+)
+
+
+# Give up (rather than loop forever on an unlimited-step run) when the model
+# cannot fit a tool call into its response budget this many times in a row.
+_MAX_CONSECUTIVE_TRUNCATIONS = 3
+
+
+class _Interrupted(Exception):
+    """The user asked to stop while we were waiting on the model."""
+
 
 def _arg_summary(args: dict) -> str:
     """A short one-line summary of tool arguments for step display."""
+    if not isinstance(args, dict):
+        return ""
     for key in ("path", "command", "pattern", "src"):
         if key in args:
             return str(args[key])[:80]
     return ""
+
+
+def _result_for_model(result) -> str:
+    """What the model is shown for a tool result.
+
+    A failure keeps its output: a failing test run or compiler error exits
+    non-zero, and the output *is* the information the model needs to fix it —
+    "exit code 1" alone is useless.
+    """
+    if result.ok:
+        return result.output or "(no output)"
+    error = result.error or "failed"
+    return f"{error}\n{result.output}" if result.output else error
 
 
 class RunStatus(str, Enum):
@@ -54,6 +94,52 @@ class RunResult:
     final_text: str
     steps: int
     state: RunState
+    # Filled in by ``AgentRuntime.run`` for the turn that just finished.
+    seconds: float = 0.0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    # What this turn changed (``state`` accumulates across a chat session).
+    files_changed: tuple[str, ...] = ()
+
+
+def _count(n: int, singular: str, plural: str | None = None) -> str:
+    return f"{n} {singular if n == 1 else (plural or singular + 's')}"
+
+
+def _result_detail(name: str, result) -> str:
+    """A short human note about a finished tool, for the step display.
+
+    Uses only counts/metadata — never file contents or command output.
+    """
+    if not result.ok:
+        return result.error or "failed"
+    meta = result.metadata
+    if name == "read_file":
+        total = meta.get("lines")
+        shown = meta.get("shown")
+        if isinstance(total, int) and isinstance(shown, (tuple, list)) and len(shown) == 2:
+            start, end = shown
+            if start <= 1 and end >= total:
+                return _count(total, "line")
+            return f"lines {start}–{end} of {total}"
+        return "read"
+    if name == "list_files":
+        return _count(meta.get("count", 0), "entry", "entries")
+    if name in ("search_files", "grep_text"):
+        count = meta.get("count", 0)
+        return _count(count, "match", "matches") if count else "no matches"
+    if name in ("write_file", "edit_file"):
+        # "Wrote x.py (+3 -1 lines)." -> "+3 -1 lines"
+        text = result.output
+        if "(" in text and text.rstrip(".").endswith(")"):
+            return text[text.rindex("(") + 1 :].rstrip(".").rstrip(")")
+        return "done"
+    if name == "run_shell":
+        return "exit 0"
+    if name in ("git_status", "git_diff"):
+        lines = len(result.output.splitlines())
+        return _count(lines, "line") if lines else "clean"
+    return "done"
 
 
 class AgentRuntime:
@@ -69,6 +155,8 @@ class AgentRuntime:
         reporter: Reporter | None = None,
         instructions: InstructionQueue | None = None,
         bus: EventBus | None = None,
+        interrupt: threading.Event | None = None,
+        shares_interrupt: bool = False,
     ) -> None:
         self.provider = provider
         self.executor = executor
@@ -81,6 +169,18 @@ class AgentRuntime:
         self.instructions = instructions if instructions is not None else InstructionQueue(self.bus)
         self._aborted = False  # set by a hard interrupt
         self._abort_reason = ""
+        # Set (from any thread or a signal handler) to stop the current turn: the
+        # CLI's Ctrl-C handler sets it. A sub-agent shares its parent's event
+        # (``shares_interrupt``) so one Ctrl-C stops the whole tree; only the
+        # owner resets it at the start of each turn.
+        self._owns_interrupt = not shares_interrupt
+        self.interrupt = interrupt if interrupt is not None else threading.Event()
+        self._tokens = [0, 0]  # [input, output] tokens used by the current turn
+        #: True while a turn is running (``run`` has not returned yet).
+        self.busy = False
+        #: True while tools run synchronously on the calling thread — the only
+        #: time a KeyboardInterrupt is needed to break out of a blocking call.
+        self.in_tool_section = False
 
     def steer(self, instruction: str) -> None:
         """Queue a steering instruction to fold in at the next safe checkpoint."""
@@ -92,6 +192,10 @@ class AgentRuntime:
         Safe checkpoints (the loop calls this before the model call, before each
         tool execution, after each tool result, and before finalizing).
         """
+        if self.interrupt.is_set() and not self._aborted:
+            self._aborted = True
+            self._abort_reason = "Interrupted."
+            self.bus.emit(EventType.INTERRUPT_REQUESTED, kind="hard", at=name)
         for instr in self.instructions.drain_steering():
             if instr.kind == InstructionKind.HARD_INTERRUPT:
                 self._aborted = True
@@ -113,7 +217,59 @@ class AgentRuntime:
         self.session.run_end("aborted", msg)
         return RunResult(RunStatus.ABORTED, msg, step, self.state)
 
+    def _hook(self, name: str, *args: object) -> None:
+        """Call an optional reporter hook (older/third-party reporters lack them)."""
+        hook = getattr(self.reporter, name, None)
+        if hook is not None:
+            hook(*args)
+
+    def _thinking(self, active: bool) -> None:
+        self._hook("thinking", active)
+
+    async def _call_model(self, messages, tools):
+        """Call the provider without blocking the loop — and without being stuck.
+
+        The request runs in a daemon thread while we poll for a stop request, so
+        "stop" / Ctrl-C take effect immediately instead of after a (possibly
+        minutes-long) generation, and an abandoned request never delays exit.
+        """
+        future = run_in_daemon_thread(self.provider.complete, messages, tools)
+        try:
+            while True:
+                done, _ = await asyncio.wait({future}, timeout=_INTERRUPT_POLL_SECONDS)
+                if done:
+                    return future.result()
+                if self.interrupt.is_set() or self.instructions.has_hard_interrupt():
+                    raise _Interrupted
+        finally:
+            if not future.done():
+                future.cancel()  # stop waiting; the thread's result is dropped
+
     async def run(self, user_request: str) -> RunResult:
+        """Run one turn. Never leaves the conversation in a state a provider rejects."""
+        self.busy = True
+        self._tokens = [0, 0]
+        files_before = len(self.state.files_changed)
+        started = time.monotonic()
+        try:
+            result = await self._run(user_request)
+        finally:
+            self.busy = False
+            self.in_tool_section = False
+            self._hook("turn_finished")  # e.g. stop a spinner left by an interrupt
+        result.seconds = time.monotonic() - started
+        result.tokens_in, result.tokens_out = self._tokens
+        result.files_changed = tuple(self.state.files_changed[files_before:])
+        return result
+
+    async def _run(self, user_request: str) -> RunResult:
+        # A previous turn's stop must not poison this one (the runtime is reused
+        # across chat turns), and anything it left half-done is closed out first.
+        self._aborted = False
+        self._abort_reason = ""
+        if self._owns_interrupt:
+            self.interrupt.clear()
+        self.context.close_dangling_tool_calls()
         self.state.goal = user_request
         self.executor.ctx.questions_asked = 0  # fresh clarification budget per turn
         self.session.prompt(user_request)
@@ -124,6 +280,7 @@ class AgentRuntime:
         # user interrupt). Otherwise cap at max_steps.
         unlimited = self.max_steps is None or self.max_steps <= 0
         steps = itertools.count(1) if unlimited else range(1, self.max_steps + 1)
+        truncations = 0  # consecutive responses cut off mid tool call
         for step in steps:
             self.bus.emit(EventType.AGENT_STEP_STARTED, step=step)
             if not self._checkpoint("before_model_call"):
@@ -133,25 +290,78 @@ class AgentRuntime:
 
             messages = self.context.build()
             tools = self.executor.registry.specs()
+            self._thinking(True)
             try:
-                response = await asyncio.to_thread(self.provider.complete, messages, tools)
+                response = await self._call_model(messages, tools)
+            except _Interrupted:
+                self._checkpoint("during_model_call")  # consume a queued "stop"
+                self._aborted = True
+                self._abort_reason = self._abort_reason or "Interrupted."
+                return self._aborted_result(step)
             except ProviderError as exc:
                 self.session.error(str(exc))
                 return RunResult(RunStatus.ERROR, str(exc), step, self.state)
+            except Exception as exc:
+                # A provider bug / unexpected response shape must not take the
+                # whole session down with a traceback.
+                msg = f"model call failed: {type(exc).__name__}: {exc}"
+                _log.warning("%s", msg)
+                self.session.error(msg)
+                return RunResult(RunStatus.ERROR, msg, step, self.state)
+            finally:
+                self._thinking(False)
 
+            used_in, used_out = response.token_usage()
+            self._tokens[0] += used_in
+            self._tokens[1] += used_out
             self.session.model_response(response.text, response.tool_calls, response.stop_reason)
             self.context.add_assistant(response)
             if response.text:
                 self.reporter.assistant_text(response.text)
+            truncated = response.stop_reason in _TRUNCATED_STOP_REASONS
 
             if not response.tool_calls:
                 if not self._checkpoint("before_finalizing"):
                     return self._aborted_result(step)
+                if truncated:
+                    self.reporter.info(
+                        "note: the response hit the output-token limit and may be cut off "
+                        "(raise --effort for a larger budget)."
+                    )
                 self.session.run_end("complete", response.text)
                 self.bus.emit(EventType.AGENT_STEP_FINISHED, step=step, final=True)
                 return RunResult(RunStatus.COMPLETE, response.text, step, self.state)
 
-            self._run_tool_calls(response)
+            if truncated:
+                # The tool-call JSON was probably cut off: running it could write
+                # half a file. Don't — tell the model to send smaller pieces.
+                self._skip_tool_calls(response, _TRUNCATED_TOOL_NOTE)
+                self.bus.emit(EventType.AGENT_STEP_FINISHED, step=step)
+                truncations += 1
+                if truncations >= _MAX_CONSECUTIVE_TRUNCATIONS:
+                    msg = (
+                        "The model keeps hitting its output-token limit before finishing "
+                        "a tool call. Try a higher --effort (larger response budget) or "
+                        "ask for the work in smaller pieces."
+                    )
+                    self.session.error(msg)
+                    return RunResult(RunStatus.ERROR, msg, step, self.state)
+                continue
+            truncations = 0
+
+            self.in_tool_section = True
+            try:
+                self._run_tool_calls(response)
+            except KeyboardInterrupt:
+                # Ctrl-C while a tool was blocking (a shell command, an approval
+                # prompt). Stop the turn cleanly instead of dying with the chat.
+                self._aborted = True
+                self._abort_reason = "Interrupted."
+                self.context.close_dangling_tool_calls(
+                    "Interrupted by the user before this tool finished."
+                )
+            finally:
+                self.in_tool_section = False
             self.bus.emit(EventType.AGENT_STEP_FINISHED, step=step)
             if self._aborted:
                 return self._aborted_result(step)
@@ -161,6 +371,14 @@ class AgentRuntime:
         return RunResult(RunStatus.MAX_STEPS, msg, self.max_steps, self.state)
 
     # -- tool execution ----------------------------------------------------
+
+    def _skip_tool_calls(self, response, note: str) -> None:
+        """Answer every tool call in ``response`` with ``note`` without running it."""
+        for tc in response.tool_calls:
+            self.session.record("tool_call", name=tc.name, arguments=tc.arguments)
+            self.context.add_tool_result(tc.id, tc.name, note)
+            self.session.tool_result(tc.name, False, note, None, {})
+        self.reporter.info("note: response was cut off by the output-token limit — retrying in smaller pieces.")
 
     def _run_tool_calls(self, response) -> None:
         revise_feedback: str | None = None
@@ -189,12 +407,24 @@ class AgentRuntime:
             # Show the boxed, risk-coloured command (or the "updates" diff) before
             # it runs — unless policy will deny it outright.
             request = self.executor.preview(tc.name, tc.arguments, response.text or None)
-            if request is not None and (
-                self.executor.permissions.decide(request.capability) is not Decision.DENY
-            ):
-                self.reporter.action(request)
+            if request is not None:
+                decision = self.executor.permissions.decide(request.capability)
+                if decision is Decision.ALLOW:
+                    # Runs without asking: show what is about to happen.
+                    self.reporter.action(request)
+                elif decision is Decision.ASK:
+                    # The approval prompt presents the request itself (command,
+                    # cwd, why, effect, risk / the diff) — showing it here too
+                    # just printed everything twice.
+                    hook = getattr(self.reporter, "awaiting_approval", None)
+                    if hook is not None:
+                        hook(request)
             outcome = self.executor.execute(
-                tc.name, tc.arguments, rationale=response.text or None, request=request
+                tc.name,
+                tc.arguments,
+                rationale=response.text or None,
+                request=request,
+                before_run=lambda name=tc.name: self._hook("tool_running", name),
             )
             self.session.permission_decision(
                 tc.name, capability, outcome.outcome.value, outcome.reason
@@ -214,8 +444,7 @@ class AgentRuntime:
 
             result = outcome.result
             assert result is not None
-            shown = result.output if result.ok else (result.error or "failed")
-            self.context.add_tool_result(tc.id, tc.name, shown)
+            self.context.add_tool_result(tc.id, tc.name, _result_for_model(result))
             self.session.tool_result(
                 tc.name, result.ok, result.output, result.error, result.metadata
             )
@@ -223,9 +452,12 @@ class AgentRuntime:
             self.state.note_command(result.metadata.get("command"))
             if not result.ok:
                 self.state.note_error(result.error)
-            self.reporter.tool_finished(
-                tc.name, result.ok, result.error or f"{len(result.output)} chars"
-            )
+            if tc.name == "run_shell" and result.output:
+                # Optional hook: a console reporter shows an excerpt of the output.
+                hook = getattr(self.reporter, "tool_output", None)
+                if hook is not None:
+                    hook(tc.name, result.output, result.ok)
+            self.reporter.tool_finished(tc.name, result.ok, _result_detail(tc.name, result))
             self.bus.emit(
                 EventType.TOOL_FINISHED if result.ok else EventType.TOOL_FAILED, name=tc.name
             )
@@ -255,6 +487,8 @@ def assemble_runtime(
     effort: Effort = Effort.MEDIUM,
     max_steps: object = _UNSET_STEPS,
     asker: object | None = None,
+    provider_name: str | None = None,
+    model: str | None = None,
 ) -> AgentRuntime:
     """Wire up a runtime. ``provider`` may be injected (tests); else built from config.
 
@@ -262,6 +496,8 @@ def assemble_runtime(
     and a system-prompt reasoning nudge. An explicit ``max_steps`` overrides the
     effort profile's ceiling. ``asker`` (a ``str -> str | None`` callable) enables
     the ``ask_user`` clarification tool when an interactive user is present.
+    ``provider_name`` / ``model`` are the ``--provider`` / ``--model`` overrides
+    of the config's default provider and that provider's configured model.
     """
     profile = profile_for(effort)
     steps = profile.max_steps if max_steps is _UNSET_STEPS else max_steps  # type: ignore[assignment]
@@ -273,7 +509,13 @@ def assemble_runtime(
     )
     permissions = PermissionManager(mode, prompter=prompter)
     if provider is None:
-        provider = build_provider(config, http_client=http_client, max_tokens=profile.max_tokens)
+        provider = build_provider(
+            config,
+            provider=provider_name,
+            model=model,
+            http_client=http_client,
+            max_tokens=profile.max_tokens,
+        )
     if session is None:
         session = SessionWriter(sandbox)
 
@@ -294,6 +536,7 @@ def assemble_runtime(
     # Lazy import avoids an import cycle (subagents imports agent symbols).
     from jarvis_code.subagents import SubAgentOrchestrator
 
+    interrupt = threading.Event()  # shared with sub-agents: one Ctrl-C stops all
     orchestrator = SubAgentOrchestrator(
         provider=provider,
         sandbox=sandbox,
@@ -302,6 +545,7 @@ def assemble_runtime(
         bus=bus,
         parent_session=session,
         parent_state=state,
+        interrupt=interrupt,
     )
     tool_ctx = ToolContext(sandbox=sandbox, orchestrator=orchestrator, asker=asker)
     executor = ToolExecutor(registry, permissions, tool_ctx)
@@ -315,4 +559,5 @@ def assemble_runtime(
         reporter=reporter,
         instructions=instructions,
         bus=bus,
+        interrupt=interrupt,
     )

@@ -813,3 +813,41 @@ def test_unknown_provider_flag_is_a_friendly_error(tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert "not configured" in result.output
     assert "Traceback" not in result.output
+
+
+# -- secrets / files ----------------------------------------------------------
+
+
+def test_env_scrub_catches_bare_and_suffixless_credential_names() -> None:
+    from jarvis_code.utils.logging import scrub_secret_env
+
+    env = {
+        "API_KEY": "a", "TOKEN": "b", "PGPASSWORD": "c", "SECRET": "d", "GH_PAT": "e",
+        "OPENAI_API_KEY": "f", "AWS_SECRET_ACCESS_KEY": "g", "MYSQL_PWD": "h",
+        "PATH": "/bin", "HOME": "/home/x", "EDITOR": "vi", "TOKENIZERS_PARALLELISM": "false",
+    }
+    assert sorted(scrub_secret_env(env)) == ["EDITOR", "HOME", "PATH", "TOKENIZERS_PARALLELISM"]
+
+
+def test_init_writes_an_owner_only_config(tmp_path: Path) -> None:
+    import os
+    import stat
+
+    from typer.testing import CliRunner
+
+    from jarvis_code.cli.main import app
+
+    assert CliRunner().invoke(app, ["--sandbox", str(tmp_path), "init"]).exit_code == 0
+    mode = stat.S_IMODE(os.stat(tmp_path / ".jarvis" / "config.toml").st_mode)
+    assert mode == 0o600  # it is about to hold an API key
+
+
+def test_transcript_never_escapes_or_crashes_when_dot_jarvis_is_a_symlink(
+    tmp_path: Path, tmp_path_factory
+) -> None:
+    from jarvis_code.sessions import SessionWriter
+
+    outside = tmp_path_factory.mktemp("elsewhere")
+    (tmp_path / ".jarvis").symlink_to(outside)
+    SessionWriter(Sandbox(tmp_path)).prompt("hello")  # used to raise SandboxViolation
+    assert not any(outside.rglob("*.jsonl"))  # and nothing was written outside

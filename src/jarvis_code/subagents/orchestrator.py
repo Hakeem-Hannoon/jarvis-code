@@ -39,12 +39,15 @@ def _run_blocking(coro):
     box: dict = {}
 
     def runner() -> None:
-        box["result"] = asyncio.run(coro)
+        try:
+            box["result"] = asyncio.run(coro)
+        except BaseException as exc:  # surfaced to the caller below
+            box["error"] = exc
 
     thread = threading.Thread(target=runner, daemon=True)
     thread.start()
     thread.join()
-    if "error" in box:  # pragma: no cover
+    if "error" in box:
         raise box["error"]
     return box["result"]
 
@@ -62,6 +65,7 @@ class SubAgentOrchestrator:
         parent_session: SessionWriter | None = None,
         parent_state: RunState | None = None,
         max_steps: int = 8,
+        interrupt: threading.Event | None = None,
     ) -> None:
         self.provider = provider
         self.sandbox = sandbox
@@ -72,6 +76,7 @@ class SubAgentOrchestrator:
         self.parent_session = parent_session
         self.parent_state = parent_state
         self.max_steps = max_steps
+        self.interrupt = interrupt  # the parent's stop signal (Ctrl-C), if any
         self._count = 0
 
     def effective_mode(self, requested: PermissionMode | None = None) -> PermissionMode:
@@ -89,7 +94,14 @@ class SubAgentOrchestrator:
             self.bus.emit(EventType.SUBAGENT_STARTED, agent_type=agent_type)
 
         sub = self._build_subruntime(agent_type)
-        result = _run_blocking(sub.run(task))
+        try:
+            result = _run_blocking(sub.run(task))
+        except Exception as exc:
+            # A sub-agent crash is reported to the parent, not raised through it.
+            _log.warning("sub-agent '%s' crashed: %s: %s", agent_type, type(exc).__name__, exc)
+            if self.bus is not None:
+                self.bus.emit(EventType.SUBAGENT_FINISHED, agent_type=agent_type)
+            return f"[{agent_type}] failed: {type(exc).__name__}: {exc}"
         summary = self._summarize(agent_type, result)
 
         if self.parent_session is not None:
@@ -105,7 +117,9 @@ class SubAgentOrchestrator:
 
     def _build_subruntime(self, agent_type: str) -> AgentRuntime:
         mode = self.effective_mode()  # inherit parent, clamped
-        registry = build_default_registry()
+        # No spawn_subagent (recursion is bounded at one level) and no ask_user
+        # (a sub-agent has no asker): don't advertise tools that can't work.
+        registry = build_default_registry(include_subagents=False, include_ask=False)
         permissions = PermissionManager(mode, prompter=self.prompter)
         system_prompt = build_system_prompt(
             mode=mode,
@@ -118,8 +132,10 @@ class SubAgentOrchestrator:
         # Sub-agents share the SAME sandbox but cannot spawn further sub-agents.
         ctx = ToolContext(sandbox=self.sandbox, orchestrator=None)
         executor = ToolExecutor(registry, permissions, ctx)
+        # Keyed by the parent session so two runs never append to the same file.
+        parent_id = self.parent_session.session_id if self.parent_session else "nosession"
         session = SessionWriter(
-            self.sandbox, session_id=f"sub-{agent_type}-{self._count}"
+            self.sandbox, session_id=f"{parent_id}-sub-{agent_type}-{self._count}"
         )
         return AgentRuntime(
             provider=self.provider,
@@ -129,6 +145,7 @@ class SubAgentOrchestrator:
             state=RunState(),
             max_steps=self.max_steps,
             bus=self.bus,
+            interrupt=self.interrupt,
         )
 
     def _summarize(self, agent_type: str, result) -> str:

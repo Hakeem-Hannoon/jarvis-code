@@ -339,3 +339,208 @@ async def test_model_sees_the_output_of_a_failing_command(sandbox: Sandbox) -> N
     tool_result = provider.calls[1][-1].content
     assert "exit code 1" in tool_result
     assert "3 tests failed" in tool_result  # used to be dropped entirely
+
+
+# -- context: compaction + repair --------------------------------------------
+
+
+def _pairing_is_valid(messages) -> bool:
+    """Every TOOL result directly answers a call from the preceding assistant turn."""
+    from jarvis_code.models import Role
+
+    open_ids: list[str] = []
+    for m in messages:
+        if m.role == Role.TOOL:
+            if m.tool_call_id not in open_ids:
+                return False
+            open_ids.remove(m.tool_call_id)
+        else:
+            if open_ids:
+                return False  # a call was never answered
+            open_ids = [tc.id for tc in m.tool_calls] if m.role == Role.ASSISTANT else []
+    return not open_ids
+
+
+def test_compaction_never_orphans_a_tool_result() -> None:
+    from jarvis_code.agent.context import ConversationContext
+    from jarvis_code.agent.state import RunState
+
+    ctx = ConversationContext("sys", max_chars=10, keep_recent=6)
+    ctx.add_user("task")
+    # One call with 3 results, then one with 2: the naive "last 6 messages"
+    # window starts in the middle of the first batch's results.
+    ctx.add_assistant(ModelResponse(tool_calls=[ToolCall(f"a{i}", "read_file", {}) for i in range(3)]))
+    for i in range(3):
+        ctx.add_tool_result(f"a{i}", "read_file", "x" * 40)
+    ctx.add_assistant(ModelResponse(tool_calls=[ToolCall(f"b{i}", "read_file", {}) for i in range(2)]))
+    for i in range(2):
+        ctx.add_tool_result(f"b{i}", "read_file", "y" * 40)
+
+    assert ctx.compact(RunState(goal="g"), force=True)
+    assert _pairing_is_valid(ctx.messages[1:])  # [0] is the summary
+
+
+def test_close_dangling_tool_calls_answers_unanswered_calls_and_drops_orphans() -> None:
+    from jarvis_code.agent.context import ConversationContext
+
+    ctx = ConversationContext("sys")
+    ctx.add_user("go")
+    ctx.add_tool_result("ghost", "read_file", "orphan")  # no call asked for this
+    ctx.add_assistant(ModelResponse(tool_calls=[ToolCall("c1", "a", {}), ToolCall("c2", "b", {})]))
+    ctx.add_tool_result("c1", "a", "done")  # c2 never answered (interrupted)
+    assert ctx.close_dangling_tool_calls() == 2
+    assert _pairing_is_valid(ctx.messages)
+    assert ctx.close_dangling_tool_calls() == 0  # idempotent
+
+
+# -- loop: stop / interrupt / truncation -------------------------------------
+
+
+class _SlowProvider:
+    name = "slow"
+    model = "test"
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+
+    def complete(self, messages, tools=None) -> ModelResponse:
+        import time
+
+        time.sleep(self.seconds)
+        return ModelResponse(text="too late")
+
+
+async def test_a_stop_in_one_turn_does_not_brick_the_next(sandbox: Sandbox) -> None:
+    provider = ScriptedProvider([ModelResponse(text="second turn ran")])
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.PLAN, provider=provider
+    )
+    runtime.steer("stop")
+    first = await runtime.run("first")
+    assert first.status is RunStatus.ABORTED
+    # The runtime is reused across chat turns: the abort flag used to stick.
+    second = await runtime.run("second")
+    assert second.status is RunStatus.COMPLETE
+    assert second.final_text == "second turn ran"
+
+
+async def test_interrupt_abandons_a_slow_model_call_immediately(sandbox: Sandbox) -> None:
+    import asyncio
+    import time
+
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.PLAN, provider=_SlowProvider(30)
+    )
+    asyncio.get_running_loop().call_later(0.2, runtime.interrupt.set)
+    started = time.monotonic()
+    result = await runtime.run("think forever")
+    assert result.status is RunStatus.ABORTED
+    assert time.monotonic() - started < 5  # not the provider's 30 seconds
+
+
+async def test_typed_stop_lands_during_the_model_call(sandbox: Sandbox) -> None:
+    import asyncio
+    import time
+
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.PLAN, provider=_SlowProvider(30)
+    )
+    asyncio.get_running_loop().call_later(0.2, runtime.steer, "stop")
+    started = time.monotonic()
+    result = await runtime.run("think forever")
+    assert result.status is RunStatus.ABORTED
+    assert time.monotonic() - started < 5
+
+
+async def test_keyboard_interrupt_in_a_tool_stops_the_turn_not_the_session(
+    sandbox: Sandbox,
+) -> None:
+    from jarvis_code.permissions import PermissionResponse
+
+    class _CtrlCPrompter:
+        def request_permission(self, request) -> PermissionResponse:
+            raise KeyboardInterrupt  # Ctrl-C at the approval prompt
+
+    provider = ScriptedProvider(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall("c1", "write_file", {"path": "x.txt", "content": "x"}),
+                    ToolCall("c2", "write_file", {"path": "y.txt", "content": "y"}),
+                ]
+            ),
+            ModelResponse(text="next turn fine"),
+        ]
+    )
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.AUTO,
+        provider=provider, prompter=_CtrlCPrompter(),
+    )
+    result = await runtime.run("write things")
+    assert result.status is RunStatus.ABORTED
+    assert _pairing_is_valid(runtime.context.messages)  # both calls were answered
+    again = await runtime.run("carry on")
+    assert again.status is RunStatus.COMPLETE
+
+
+async def test_truncated_tool_call_is_not_executed(sandbox: Sandbox, root: Path) -> None:
+    provider = ScriptedProvider(
+        [
+            ModelResponse(
+                tool_calls=[ToolCall("c1", "write_file", {"path": "big.txt", "content": "half a fi"})],
+                stop_reason="max_tokens",
+            ),
+            ModelResponse(text="ok, smaller pieces"),
+        ]
+    )
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.DANGEROUS, provider=provider
+    )
+    result = await runtime.run("write a big file")
+    assert result.status is RunStatus.COMPLETE
+    assert not (root / "big.txt").exists()  # the cut-off write never happened
+    assert "output-token limit" in provider.calls[1][-1].content
+
+
+async def test_unexpected_provider_exception_is_an_error_result(sandbox: Sandbox) -> None:
+    class _Broken:
+        name = "broken"
+        model = "test"
+
+        def complete(self, messages, tools=None):
+            raise KeyError("choices")
+
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.PLAN, provider=_Broken()
+    )
+    result = await runtime.run("hi")
+    assert result.status is RunStatus.ERROR
+    assert "model call failed" in result.final_text
+
+
+# -- sub-agents ---------------------------------------------------------------
+
+
+def test_subagents_are_not_offered_tools_that_cannot_work(sandbox: Sandbox) -> None:
+    from jarvis_code.subagents import SubAgentOrchestrator
+
+    orch = SubAgentOrchestrator(
+        provider=ScriptedProvider([]), sandbox=sandbox, parent_mode=PermissionMode.PLAN
+    )
+    names = orch._build_subruntime("explorer").executor.registry.names()
+    assert "spawn_subagent" not in names and "ask_user" not in names
+
+
+def test_a_crashing_subagent_is_reported_not_raised(sandbox: Sandbox) -> None:
+    from jarvis_code.subagents import SubAgentOrchestrator
+
+    class _Boom:
+        name = "boom"
+        model = "test"
+
+        def complete(self, messages, tools=None):
+            raise SystemError("kaboom")
+
+    orch = SubAgentOrchestrator(provider=_Boom(), sandbox=sandbox, parent_mode=PermissionMode.PLAN)
+    summary = orch.spawn("explorer", "look around")
+    assert summary.startswith("[explorer]")  # an error summary, not an exception

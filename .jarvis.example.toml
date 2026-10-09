@@ -25,11 +25,11 @@ model = "deepseek-chat"
 
 [providers.gemini]
 api_key = ""                                  # or set GEMINI_API_KEY
-model = "gemini-1.5-pro"
+model = "gemini-3.8-flash"
 
 [providers.vertex]
 api_key = ""                                  # or set VERTEX_API_KEY
-model = "gemini-1.5-pro"
+model = "gemini-3.8-flash"
 endpoint = "https://us-central1-aiplatform.googleapis.com"  # your region endpoint
 project = "your-gcp-project-id"
 location = "us-central1"

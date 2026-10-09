@@ -231,3 +231,111 @@ def test_grep_accepts_a_single_file_path(tmp_path: Path) -> None:
         "grep_text", {"pattern": "beta", "path": "one.txt"}
     ).result.output
     assert out == "one.txt:2: beta"
+
+
+# -- run_shell ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'grep -rn "shutdown" .',
+        'echo "do not reboot the server"',
+        "git log --grep=halt",
+        'git commit -m "fix poweroff handling"',
+        "dd if=/dev/zero of=/dev/null bs=1M count=1",
+        "rm -rf build",
+        "cat mkfs_notes.txt",
+    ],
+)
+def test_screening_does_not_refuse_harmless_commands(command: str) -> None:
+    from jarvis_code.tools.shell_tool import screen_shell_command
+
+    screen_shell_command(command)  # must not raise
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf /",
+        "rm -Rf /",
+        "rm -r -f /",
+        "rm -rf --no-preserve-root /",
+        "rm -rf ~/",
+        'rm -rf "$HOME"',
+        "sudo rm -rf /*",
+        "sudo -u root rm -rf /",
+        "cd /tmp && rm -rf ~",
+        "echo hi\nrm -rf /",
+        "sh -c 'rm -rf /'",
+        "FOO=1 rm --recursive --force /",
+        "shutdown -h now",
+        "ls; sudo reboot",
+        "systemctl poweroff",
+        "mkfs.ext4 /dev/sda1",
+        "dd if=/dev/zero of=/dev/sda",
+        "echo x > /dev/sda",
+        ":(){ :|:& };:",
+    ],
+)
+def test_screening_blocks_catastrophic_spellings(command: str) -> None:
+    from jarvis_code.tools.shell_tool import ShellCommandBlocked, screen_shell_command
+
+    with pytest.raises(ShellCommandBlocked):
+        screen_shell_command(command)
+
+
+def test_shell_reads_eof_from_stdin_instead_of_the_terminal(executor) -> None:
+    # `cat` with inherited stdin would sit on the user's terminal until timeout.
+    out = executor.execute("run_shell", {"command": "cat; echo after"})
+    assert out.result is not None and out.result.ok
+    assert out.result.output.strip() == "after"
+
+
+def test_shell_timeout_kills_the_whole_process_tree(sandbox: Sandbox, root: Path) -> None:
+    import os
+    import time
+
+    ex = ToolExecutor(
+        build_default_registry(),
+        PermissionManager(PermissionMode.DANGEROUS),
+        ToolContext(sandbox=sandbox, shell_timeout=1.0),
+    )
+    # A background child that would outlive the shell if only the shell is killed.
+    out = ex.execute(
+        "run_shell",
+        {"command": "(sleep 30 & echo $! > child.pid; echo started; wait)"},
+    )
+    assert out.result is not None and not out.result.ok
+    assert "timed out" in (out.result.error or "")
+    assert "started" in out.result.output  # partial output survives the timeout
+    pid = int((root / "child.pid").read_text())
+    for _ in range(50):  # the kill is asynchronous; give it a moment
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(pid, 9)
+        pytest.fail("background child survived the timeout")
+
+
+async def test_model_sees_the_output_of_a_failing_command(sandbox: Sandbox) -> None:
+    provider = ScriptedProvider(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall("c1", "run_shell", {"command": "echo 3 tests failed; exit 1"})
+                ]
+            ),
+            ModelResponse(text="saw it"),
+        ]
+    )
+    runtime = assemble_runtime(
+        config=_config(), sandbox=sandbox, mode=PermissionMode.DANGEROUS, provider=provider
+    )
+    await runtime.run("run the tests")
+    tool_result = provider.calls[1][-1].content
+    assert "exit code 1" in tool_result
+    assert "3 tests failed" in tool_result  # used to be dropped entirely

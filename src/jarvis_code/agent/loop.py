@@ -35,6 +35,8 @@ _log = get_logger("agent")
 
 def _arg_summary(args: dict) -> str:
     """A short one-line summary of tool arguments for step display."""
+    if not isinstance(args, dict):
+        return ""
     for key in ("path", "command", "pattern", "src"):
         if key in args:
             return str(args[key])[:80]

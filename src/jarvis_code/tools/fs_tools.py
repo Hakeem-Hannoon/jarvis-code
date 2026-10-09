@@ -125,13 +125,17 @@ class WriteFileTool(Tool):
         path = self._require(args, "path")
         content = self._require(args, "content")
         try:
-            old = ctx.sandbox.read(path) if ctx.sandbox.exists(path) else ""
+            try:
+                old = ctx.sandbox.read(path) if ctx.sandbox.exists(path) else ""
+            except UnicodeDecodeError:
+                old = None  # replacing a binary/non-UTF-8 file: no line diff to show
             resolved = ctx.sandbox.write(path, str(content))
         except (SandboxViolation, OSError) as exc:
             return ToolResult.fail(str(exc))
         rel = ctx.sandbox.relpath(resolved)
+        summary = "replaced a non-text file" if old is None else change_summary(old, str(content))
         return ToolResult.success(
-            f"Wrote {rel} ({change_summary(old, str(content))}).",
+            f"Wrote {rel} ({summary}).",
             path=rel,
             files_changed=[rel],
         )
